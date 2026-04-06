@@ -2,35 +2,39 @@ import * as esbuild from "esbuild";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
-/** SPA 客户端配置选项 */
+/**
+ * SPA 客户端配置选项
+ */
 export interface SPAClientOptions {
     /** 入口文件路径 */
     entryPoint: string;
-    /** 是否压缩代码 */
+    /** 是否压缩代码，默认 false */
     minify?: boolean;
-    /** 是否生成 source map */
+    /** source map 配置：false | "inline" | "external"，默认 false */
     sourcemap?: boolean | "inline" | "external";
-    /** 外部依赖列表 */
+    /** 外部依赖列表，不参与打包 */
     external?: string[];
-    /** 输出格式，esm 对应 type="module" */
+    /** 输出格式："esm" 对应 type="module"，"iife" 为普通脚本，默认 "esm" */
     format?: "esm" | "iife";
-    /** 是否直接写入磁盘 */
+    /** 是否直接写入磁盘，默认 false（返回代码字符串） */
     write?: boolean;
-    /** 输出文件路径 */
+    /** 输出文件路径，write=true 时必填 */
     outFile?: string;
-    /** 浏览器访问路径 */
+    /** 浏览器访问路径，用于生成 script 标签 */
     publicPath?: string;
-    /** 编译目标 */
+    /** 编译目标，默认 ["es2020"] */
     target?: string[];
-    /** 自定义 loader */
+    /** 自定义文件 loader，默认支持 .tsx/.jsx/.ts/.js */
     loader?: Record<string, esbuild.Loader>;
 }
 
-/** SPA 客户端构建结果 */
+/**
+ * SPA 客户端构建结果
+ */
 export interface SPAClientBuildResult {
-    /** 编译后的客户端代码 */
+    /** 编译后的客户端代码（write=false 时可用） */
     clientCode?: string;
-    /** source map */
+    /** source map 内容 */
     map?: string;
     /** 入口文件路径 */
     entryPoint: string;
@@ -46,7 +50,7 @@ export interface SPAClientBuildResult {
 
 /**
  * SPA React 客户端构建器
- * 用于将 TSX/JSX 组件编译为客户端代码，支持 SSR 水合
+ * 基于 esbuild 编译 TSX/JSX 为浏览器可执行代码，用于 SSR 水合
  */
 export class SPAClient {
     private options: Required<
@@ -58,6 +62,10 @@ export class SPAClient {
 
     private buildResult: SPAClientBuildResult | null = null;
 
+    /**
+     * 创建构建器实例
+     * @param options - SPA 客户端配置选项
+     */
     constructor(options: SPAClientOptions) {
         this.options = {
             minify: false,
@@ -76,7 +84,11 @@ export class SPAClient {
         };
     }
 
-    /** 编译入口文件为客户端代码 */
+    /**
+     * 编译入口文件为客户端代码
+     * @returns 构建结果对象
+     * @throws write=true 但未指定 outFile 时抛出错误
+     */
     async build(): Promise<SPAClientBuildResult> {
         if (this.options.write && !this.options.outFile) {
             throw new Error("outFile is required when write=true");
@@ -118,7 +130,11 @@ export class SPAClient {
         return this.buildResult;
     }
 
-    /** 保存当前构建结果到磁盘 */
+    /**
+     * 保存构建结果到磁盘
+     * @returns 无返回值
+     * @throws 未调用 build()、未指定 outFile、代码为空时抛出错误
+     */
     async save(): Promise<void> {
         if (!this.buildResult) {
             throw new Error("build() must be called before save()");
@@ -148,7 +164,10 @@ export class SPAClient {
         }
     }
 
-    /** 编译并保存 */
+    /**
+     * 编译并保存到磁盘
+     * @returns 构建结果对象
+     */
     async buildAndSave(): Promise<SPAClientBuildResult> {
         const result = await this.build();
         if (!this.options.write) {
@@ -157,17 +176,27 @@ export class SPAClient {
         return result;
     }
 
-    /** 获取当前构建结果 */
+    /**
+     * 获取当前构建结果
+     * @returns 构建结果对象，未构建时返回 null
+     */
     getResult(): SPAClientBuildResult | null {
         return this.buildResult;
     }
 
-    /** 获取客户端代码字符串 */
+    /**
+     * 获取客户端代码字符串
+     * @returns 代码字符串，未构建时返回 null
+     */
     getCode(): string | null {
         return this.buildResult?.clientCode ?? null;
     }
 
-    /** 获取脚本标签 */
+    /**
+     * 生成 HTML script 标签
+     * @returns script 标签字符串，esm 格式为 `<script type="module">`
+     * @throws 未配置 publicPath 时抛出错误
+     */
     getScriptTag(): string {
         const publicPath = this.options.publicPath ?? this.buildResult?.publicPath;
         if (!publicPath) {
@@ -179,8 +208,16 @@ export class SPAClient {
             : `<script src="${publicPath}"></script>`;
     }
 
-    /** 获取构建产物信息 */
-    getAssetInfo() {
+    /**
+     * 获取构建产物信息摘要
+     * @returns 包含 outputFile、publicPath、format、scriptTag 的对象
+     */
+    getAssetInfo(): {
+        outputFile: string | undefined;
+        publicPath: string | undefined;
+        format: "esm" | "iife";
+        scriptTag: string;
+    } {
         return {
             outputFile: this.options.outFile ?? this.buildResult?.outputFile,
             publicPath: this.options.publicPath ?? this.buildResult?.publicPath,
@@ -190,7 +227,11 @@ export class SPAClient {
     }
 }
 
-/** 创建 SPA 客户端实例 */
+/**
+ * 创建 SPA 客户端构建器实例
+ * @param options - SPA 客户端配置选项
+ * @returns SPAClient 实例
+ */
 export function createSPAClient(options: SPAClientOptions): SPAClient {
     return new SPAClient(options);
 }
