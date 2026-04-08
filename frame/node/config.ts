@@ -1,5 +1,6 @@
 import type { SPAClientOptions } from "./pageBuild/SPAbuild";
 import type { SSRBuildOptions } from "./pageBuild/SSRbuild";
+import {HttpServerOptions} from "./httpClient/httpClient";
 
 /**
  * SPA 客户端构建配置
@@ -84,3 +85,24 @@ export const PageBuildDefaultConfig: PageBuildConfig = {
     spa: SPAClientConfig,
     ssr: SSRBuildConfig,
 };
+
+export const HTTPClientConfig = {
+    responseURL: "http://localhost:3000",
+    headers: {
+        "Content-Type": "application/json",
+    },
+    timeout: 5000,
+
+};
+
+export const HttpServerConfig:HttpServerOptions = {
+    port: 3000,
+    host: "0.0.0.0",
+    ssl: false,
+    certPath: "",
+    keyPath: "",
+    maxBodySize: 10 * 1024 * 1024,
+    timeout: 120000,
+    keepAlive: true,
+    keepAliveTimeout: 5000
+}

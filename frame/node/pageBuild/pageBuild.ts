@@ -152,12 +152,28 @@ export class PageBuild {
     }
 
     /**
-     * 加载指定页面模块
-     * @param pageName - 页面名称
+     * 加载指定路由的页面模块
+     * @param route - 页面路由
      * @returns 页面模块对象
      */
-    loadPage(pageName: string) {
-        return this.loader.load(pageName, this.config.isDev);
+    loadPage(route: string) {
+        return this.loader.load(route, this.config.isDev);
+    }
+
+    /**
+     * 加载页面模块（需先通过路由获取页面信息）
+     * @param route - 页面路由
+     * @returns 页面模块对象
+     * @throws 页面路由不存在时抛出错误
+     */
+    loadPageByRoute(route: string) {
+        const page = this.router.getPageByRoute(route);
+        if (!page) {
+            throw new Error(`Page route not found: ${route}`);
+        }
+        // 注册路由映射后加载
+        this.loader.registerPage(page);
+        return this.loader.load(page.route, this.config.isDev);
     }
 
     /**

@@ -21,8 +21,10 @@ export interface PageModule {
  * SSR 模块加载选项
  */
 export interface SSRLoadOptions {
-    /** 页面名称 */
-    pageName: string;
+    /** 页面路由（唯一标识） */
+    route: string;
+    /** 页面文件名（不含扩展名） */
+    pageName?: string;
     /** 是否开发环境，开发环境会清除缓存支持热更新 */
     isDev: boolean;
     /** 页面输出目录，默认 "dist/pages" */
@@ -34,11 +36,15 @@ export interface SSRLoadOptions {
 /**
  * SSR 模块加载器
  * 负责加载编译后的页面模块，支持开发环境热更新
+ * 使用 route 作为唯一标识，避免同名页面冲突
  */
 export class SSRLoader {
     private pagesDir: string;
     private ext: string;
+    /** 模块缓存，key 为 route */
     private moduleCache: Map<string, PageModule> = new Map();
+    /** route 到文件路径的映射 */
+    private routePathMap: Map<string, string> = new Map();
 
     /**
      * 创建模块加载器实例
@@ -51,29 +57,67 @@ export class SSRLoader {
     }
 
     /**
-     * 获取页面模块文件路径
-     * @param pageName - 页面名称
-     * @returns 完整文件路径
+     * 注册页面路由与文件路径的映射
+     * @param page - 页面定义
      */
-    private getModulePath(pageName: string): string {
-        return path.resolve(this.pagesDir, `${pageName}${this.ext}`);
+    registerPage(page: SSRPage): void {
+        if (page.enabled === false) return;
+        const filePath = path.resolve(this.pagesDir, `${page.name}${this.ext}`);
+        this.routePathMap.set(page.route, filePath);
     }
 
     /**
-     * 清除指定页面的模块缓存
-     * @param pageName - 页面名称
+     * 批量注册页面路由映射
+     * @param pages - 页面定义数组
      */
-    clearCache(pageName: string): void {
-        const modulePath = this.getModulePath(pageName);
-        this.moduleCache.delete(pageName);
+    registerPages(pages: SSRPage[]): void {
+        for (const page of pages) {
+            this.registerPage(page);
+        }
+    }
+
+    /**
+     * 根据路由获取模块文件路径
+     * @param route - 页面路由
+     * @param pagesDir - 可选的页面目录覆盖
+     * @param ext - 可选的扩展名覆盖
+     * @returns 模块文件路径
+     */
+    private getModulePath(route: string, pagesDir?: string, ext?: string): string {
+        // 优先使用注册的映射
+        if (this.routePathMap.has(route)) {
+            return this.routePathMap.get(route)!;
+        }
+        // 未注册时尝试用 route 作为文件名（去掉斜杠和动态参数）
+        const targetDir = pagesDir ?? this.pagesDir;
+        const targetExt = ext ?? this.ext;
+        const pageName = route
+            .replace(/^\//, "")
+            .replace(/\/:/g, "_")
+            .replace(/\//g, "_");
+        return path.resolve(targetDir, `${pageName}${targetExt}`);
+    }
+
+    /**
+     * 清除指定路由的模块缓存
+     * @param route - 页面路由
+     */
+    clearCache(route: string): void {
+        this.moduleCache.delete(route);
+
+        // 直接从映射中获取实际加载时使用的路径
+        const modulePath = this.routePathMap.get(route);
+        if (!modulePath) return;
 
         // 清除 require 缓存
         const cached = require.cache[modulePath];
         if (cached) {
             delete require.cache[modulePath];
-            // 清除关联的父子依赖缓存
             this.clearModuleDependencies(cached);
         }
+
+        // 同时清除路径映射
+        this.routePathMap.delete(route);
     }
 
     /**
@@ -95,10 +139,11 @@ export class SSRLoader {
      * 清除所有模块缓存
      */
     clearAllCache(): void {
-        for (const pageName of this.moduleCache.keys()) {
-            this.clearCache(pageName);
+        for (const route of this.moduleCache.keys()) {
+            this.clearCache(route);
         }
         this.moduleCache.clear();
+        this.routePathMap.clear();
     }
 
     /**
@@ -108,32 +153,50 @@ export class SSRLoader {
      * @throws 模块不存在或加载失败时抛出错误
      */
     load(options: SSRLoadOptions): PageModule;
-    load(pageName: string, isDev?: boolean): PageModule;
-    load(pageNameOrOptions: string | SSRLoadOptions, isDev: boolean = false): PageModule {
+    load(route: string, isDev?: boolean): PageModule;
+    load(routeOrOptions: string | SSRLoadOptions, isDev: boolean = false): PageModule {
         const options: SSRLoadOptions =
-            typeof pageNameOrOptions === "string"
-                ? { pageName: pageNameOrOptions, isDev }
-                : pageNameOrOptions;
+            typeof routeOrOptions === "string"
+                ? { route: routeOrOptions, isDev }
+                : routeOrOptions;
 
-        const { pageName, isDev: dev, pagesDir, ext } = options;
+        const { route, pageName, isDev: dev, pagesDir, ext } = options;
 
-        // 允许临时覆盖默认配置
-        const targetDir = pagesDir ?? this.pagesDir;
-        const targetExt = ext ?? this.ext;
-        const modulePath = path.resolve(targetDir, `${pageName}${targetExt}`);
+        // 计算实际的模块路径，不修改实例默认配置
+        let modulePath: string;
+        if (pageName) {
+            const targetDir = pagesDir ?? this.pagesDir;
+            const targetExt = ext ?? this.ext;
+            modulePath = path.resolve(targetDir, `${pageName}${targetExt}`);
+            // 存入映射供后续 clearCache 使用
+            this.routePathMap.set(route, modulePath);
+        } else {
+            modulePath = this.getModulePath(route, pagesDir, ext);
+            // 存入映射供后续 clearCache 使用
+            this.routePathMap.set(route, modulePath);
+        }
 
         // 开发环境下清除缓存
         if (dev) {
-            this.clearCache(pageName);
+            this.clearCache(route);
+            // clearCache 会删除 routePathMap，需要重新设置
+            this.routePathMap.set(route, modulePath);
         }
 
         // 非开发环境且已缓存则直接返回
-        if (!dev && this.moduleCache.has(pageName)) {
-            return this.moduleCache.get(pageName)!;
+        if (!dev && this.moduleCache.has(route)) {
+            return this.moduleCache.get(route)!;
         }
 
+        // 先检查模块文件是否存在
         try {
-            // 使用 require 加载模块
+            require.resolve(modulePath);
+        } catch (resolveError) {
+            throw new Error(`Page module not found: route=${route} (path: ${modulePath})`);
+        }
+
+        // 模块文件存在，开始加载
+        try {
             // eslint-disable-next-line @typescript-eslint/no-var-requires
             const module = require(modulePath);
 
@@ -148,16 +211,13 @@ export class SSRLoader {
 
             // 非开发环境缓存模块
             if (!dev) {
-                this.moduleCache.set(pageName, pageModule);
+                this.moduleCache.set(route, pageModule);
             }
 
             return pageModule;
-        } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND") {
-                throw new Error(`Page module not found: ${pageName} (path: ${modulePath})`);
-            }
+        } catch (loadError) {
             throw new Error(
-                `Failed to load page module "${pageName}": ${(error as Error).message}`
+                `Failed to load page module "${route}" (dependency error): ${(loadError as Error).message}`
             );
         }
     }
@@ -166,20 +226,22 @@ export class SSRLoader {
      * 批量加载页面模块
      * @param pages - 页面定义数组
      * @param isDev - 是否开发环境
-     * @returns 页面名称到模块的映射
+     * @returns route 到模块的映射
      */
     loadPages(pages: SSRPage[], isDev: boolean = false): Map<string, PageModule> {
+        // 先注册所有页面映射
+        this.registerPages(pages);
+
         const result = new Map<string, PageModule>();
 
         for (const page of pages) {
             if (page.enabled === false) continue;
 
             try {
-                const module = this.load(page.name, isDev);
-                result.set(page.name, module);
+                const module = this.load(page.route, isDev);
+                result.set(page.route, module);
             } catch {
-                // 跳过加载失败的页面
-                console.warn(`Failed to load page: ${page.name}`);
+                console.warn(`Failed to load page: route=${page.route}`);
             }
         }
 
@@ -188,12 +250,11 @@ export class SSRLoader {
 
     /**
      * 检查模块是否存在
-     * @param pageName - 页面名称
+     * @param route - 页面路由
      * @returns 模块是否存在
      */
-    exists(pageName: string): boolean {
-        const modulePath = this.getModulePath(pageName);
-
+    exists(route: string): boolean {
+        const modulePath = this.getModulePath(route);
         try {
             require.resolve(modulePath);
             return true;
@@ -203,10 +264,10 @@ export class SSRLoader {
     }
 
     /**
-     * 获取当前缓存的页面列表
-     * @returns 已缓存的页面名称数组
+     * 获取当前缓存的页面路由列表
+     * @returns 已缓存的页面路由数组
      */
-    getCachedPages(): string[] {
+    getCachedRoutes(): string[] {
         return Array.from(this.moduleCache.keys());
     }
 
@@ -216,6 +277,8 @@ export class SSRLoader {
      */
     setPagesDir(pagesDir: string): void {
         this.pagesDir = pagesDir;
+        // 清除路径映射，需要重新注册
+        this.routePathMap.clear();
     }
 
     /**
@@ -224,6 +287,8 @@ export class SSRLoader {
      */
     setExt(ext: string): void {
         this.ext = ext;
+        // 清除路径映射，需要重新注册
+        this.routePathMap.clear();
     }
 }
 
@@ -245,20 +310,20 @@ export function getLoader(pagesDir?: string, ext?: string): SSRLoader {
 
 /**
  * 加载页面模块（使用默认加载器）
- * @param pageName - 页面名称
+ * @param route - 页面路由
  * @param isDev - 是否开发环境
  * @returns 页面模块对象
  */
-export function loadPageModule(pageName: string, isDev: boolean = false): PageModule {
-    return getLoader().load(pageName, isDev);
+export function loadPageModule(route: string, isDev: boolean = false): PageModule {
+    return getLoader().load(route, isDev);
 }
 
 /**
  * 清除页面缓存（使用默认加载器）
- * @param pageName - 页面名称
+ * @param route - 页面路由
  */
-export function clearPageCache(pageName: string): void {
-    return getLoader().clearCache(pageName);
+export function clearPageCache(route: string): void {
+    return getLoader().clearCache(route);
 }
 
 /**
