@@ -1,6 +1,8 @@
 import type { SPAClientOptions } from "./pageBuild/SPAbuild";
 import type { SSRBuildOptions } from "./pageBuild/SSRbuild";
+import type { LoadConfig, FilterMode } from "./pageBuild/SSRrenderController";
 import {HttpServerOptions} from "./httpClient/httpClient";
+import {response} from "./httpClient/type";
 
 /**
  * SPA 客户端构建配置
@@ -57,6 +59,18 @@ export const SSRBuildConfig: SSRBuildOptions = {
 };
 
 /**
+ * 加载配置
+ */
+export const LoadConfigDefault: LoadConfig = {
+    filterMode: "none" as FilterMode,
+    filterRoutes: [],
+    preload: false,
+    preloadRoutes: [],
+    slowLoad: false,
+    slowLoadRoutes: [],
+};
+
+/**
  * PageBuild 总体配置
  */
 export interface PageBuildConfig {
@@ -72,6 +86,8 @@ export interface PageBuildConfig {
     spa: SPAClientOptions;
     /** SSR 服务端构建配置 */
     ssr: SSRBuildOptions;
+    /** 加载配置（预加载、慢加载、过滤） */
+    loadConfig?: LoadConfig;
 }
 
 /**
@@ -84,6 +100,7 @@ export const PageBuildDefaultConfig: PageBuildConfig = {
     ssrPagesDir: "../../build/pages",
     spa: SPAClientConfig,
     ssr: SSRBuildConfig,
+    loadConfig: LoadConfigDefault,
 };
 
 export const HTTPClientConfig = {
@@ -105,4 +122,10 @@ export const HttpServerConfig:HttpServerOptions = {
     timeout: 120000,
     keepAlive: true,
     keepAliveTimeout: 5000
+}
+export const ResponseConfig = {
+    Cookie: '',
+    Content_Type:'application/json',
+    path:'/',
+    url:''
 }

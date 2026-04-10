@@ -12,6 +12,12 @@ import {
 } from "./SPAbuild";
 import { PageRouter, generateRoutes, createPageRouter } from "./routerGenerate";
 import { SSRLoader, createSSRLoader } from "./SSRload";
+import {
+    SSRrenderController,
+    SSRrenderControllerConfig,
+    RenderRequestResult,
+    createSSRrenderController,
+} from "./SSRrenderController";
 
 /**
  * PageBuild 构建结果
@@ -47,11 +53,13 @@ export interface PageBuildContext {
     router: PageRouter;
     /** 模块加载器 */
     loader: SSRLoader;
+    /** SSR 渲染控制器 */
+    renderController: SSRrenderController;
 }
 
 /**
  * PageBuild - 页面构建入口
- * 整合 SPA 构建、SSR 构建、路由生成、模块加载
+ * 整合 SPA 构建、SSR 构建、路由生成、模块加载、渲染控制
  */
 export class PageBuild {
     private config: PageBuildConfig;
@@ -59,6 +67,7 @@ export class PageBuild {
     private ssrBuilder: SSRBuild;
     private router: PageRouter;
     private loader: SSRLoader;
+    private renderController: SSRrenderController;
 
     /**
      * 创建 PageBuild 实例
@@ -70,6 +79,20 @@ export class PageBuild {
         this.ssrBuilder = createSSRBuild(config.ssr);
         this.router = createPageRouter();
         this.loader = createSSRLoader(config.ssrPagesDir);
+
+        // 创建渲染控制器配置
+        const controllerConfig: SSRrenderControllerConfig = {
+            pagesDir: config.ssrPagesDir,
+            ext: ".js",
+            isDev: config.isDev,
+            router: this.router,
+            hybridConfig: {
+                spaClientScriptPath: config.spa.publicPath,
+                spaClientScriptType: config.spa.format === "esm" ? "module" : "text/javascript",
+            },
+        };
+
+        this.renderController = createSSRrenderController(controllerConfig);
     }
 
     /**
@@ -83,6 +106,7 @@ export class PageBuild {
             ssrBuilder: this.ssrBuilder,
             router: this.router,
             loader: this.loader,
+            renderController: this.renderController,
         };
     }
 
@@ -93,6 +117,8 @@ export class PageBuild {
     async initRouter(): Promise<PageRouter> {
         const pagesDir = path.resolve(__dirname, this.config.pagesDir);
         this.router = await generateRoutes(pagesDir);
+        // 更新渲染控制器的路由
+        this.renderController.setRouter(this.router);
         return this.router;
     }
 
@@ -103,6 +129,10 @@ export class PageBuild {
     async buildSPA(): Promise<{ result: SPAClientBuildResult | null; error?: Error }> {
         try {
             const result = await this.spaBuilder.buildAndSave();
+            // 更新渲染控制器的 SPA 客户端脚本路径
+            if (result.publicPath) {
+                this.renderController.setSpaClientScriptPath(result.publicPath);
+            }
             return { result };
         } catch (error) {
             return { result: null, error: error as Error };
@@ -124,7 +154,7 @@ export class PageBuild {
 
     /**
      * 执行完整构建流程
-     * 依次执行：路由初始化 -> SPA 构建 -> SSR 构建（并行）
+     * 依次执行：路由初始化 -> SPA 构建 -> SSR 构建（并行）-> 预加载
      */
     async build(): Promise<PageBuildResult> {
         const startTime = Date.now();
@@ -138,6 +168,11 @@ export class PageBuild {
             this.buildSSR(),
         ]);
 
+        // 3. 如果构建成功，执行预加载
+        if (!spaResult.error && !ssrResult.error) {
+            await this.renderController.autoPreload();
+        }
+
         const duration = Date.now() - startTime;
 
         return {
@@ -149,6 +184,35 @@ export class PageBuild {
             duration,
             success: !spaResult.error && !ssrResult.error,
         };
+    }
+
+    /**
+     * 执行预加载
+     * @param routes - 可选的路由列表，默认使用配置中的预加载路由
+     */
+    async preload(routes?: string[]): Promise<void> {
+        await this.renderController.preloadPages(routes);
+    }
+
+    /**
+     * 处理渲染请求
+     * @param route - 路由路径
+     * @param json - 要注入的 JSON 数据
+     * @returns 渲染结果
+     */
+    async render(route: string, json: unknown = {}): Promise<RenderRequestResult> {
+        return this.renderController.requestDeal(route, json);
+    }
+
+    /**
+     * 批量渲染请求
+     * @param requests - 渲染请求列表
+     * @returns 渲染结果列表
+     */
+    async batchRender(
+        requests: Array<{ route: string; json: unknown }>
+    ): Promise<RenderRequestResult[]> {
+        return this.renderController.batchRequestDeal(requests);
     }
 
     /**
@@ -198,6 +262,15 @@ export class PageBuild {
      */
     clearCache(): void {
         this.loader.clearAllCache();
+        this.renderController.clearAll();
+    }
+
+    /**
+     * 清除预加载缓存
+     * @param route - 可选的路由路径
+     */
+    clearPreloadCache(route?: string): void {
+        this.renderController.clearPreloadCache(route);
     }
 
     /**
@@ -211,6 +284,12 @@ export class PageBuild {
         this.spaBuilder = createSPAClient(this.config.spa);
         this.ssrBuilder = createSSRBuild(this.config.ssr);
         this.loader = createSSRLoader(this.config.ssrPagesDir);
+
+        // 更新渲染控制器
+        this.renderController.setDevMode(this.config.isDev);
+        if (this.config.spa.publicPath) {
+            this.renderController.setSpaClientScriptPath(this.config.spa.publicPath);
+        }
     }
 
     /**
@@ -219,6 +298,31 @@ export class PageBuild {
      */
     setDevMode(isDev: boolean): void {
         this.config.isDev = isDev;
+        this.renderController.setDevMode(isDev);
+    }
+
+    /**
+     * 获取渲染控制器
+     * @returns SSRrenderController 实例
+     */
+    getRenderController(): SSRrenderController {
+        return this.renderController;
+    }
+
+    /**
+     * 获取预加载状态
+     * @returns 已预加载的路由列表
+     */
+    getPreloadedRoutes(): string[] {
+        return this.renderController.getPreloadedRoutes();
+    }
+
+    /**
+     * 获取当前配置
+     * @returns PageBuildConfig 对象
+     */
+    getConfig(): PageBuildConfig {
+        return this.config;
     }
 }
 
