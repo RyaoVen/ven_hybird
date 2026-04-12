@@ -115,7 +115,7 @@ export class PageBuild {
      * 扫描页面目录并生成路由表
      */
     async initRouter(): Promise<PageRouter> {
-        const pagesDir = path.resolve(__dirname, this.config.pagesDir);
+        const pagesDir = path.resolve(process.cwd(), this.config.pagesDir);
         this.router = await generateRoutes(pagesDir);
         // 更新渲染控制器的路由
         this.renderController.setRouter(this.router);

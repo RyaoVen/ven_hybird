@@ -8,13 +8,13 @@ import {response} from "./httpClient/type";
  * SPA 客户端构建配置
  */
 export const SPAClientConfig: SPAClientOptions = {
-    entryPoint: "../../../build/app/entry-client.tsx",
+    entryPoint: "./build/app/entry-client.tsx",
     minify: true,
     sourcemap: "external",
     external: [],
     format: "esm",
     write: true,
-    outFile: "../../build/entry-client.js",
+    outFile: "./build/entry-client.js",
     publicPath: "/",
     target: ["esnext"],
     loader: {
@@ -40,13 +40,13 @@ export const SPAClientConfig: SPAClientOptions = {
  * SSR 服务端构建配置
  */
 export const SSRBuildConfig: SSRBuildOptions = {
-    entryPoint: "../../../build/app/entry-server.tsx",
+    entryPoint: "./build/app/entry-server.tsx",
     minify: true,
     sourcemap: "external",
     external: [],
     format: "cjs",
     write: true,
-    outFile: "../../build/entry-server.js",
+    outFile: "./build/entry-server.js",
     target: ["esnext"],
     loader: {
         ".tsx": "tsx",
@@ -95,9 +95,9 @@ export interface PageBuildConfig {
  */
 export const PageBuildDefaultConfig: PageBuildConfig = {
     isDev: false,
-    pagesDir: "../../../build/app/pages",
-    outputDir: "../../build",
-    ssrPagesDir: "../../build/pages",
+    pagesDir: "./build/app/pages",
+    outputDir: "./build",
+    ssrPagesDir: "./build",
     spa: SPAClientConfig,
     ssr: SSRBuildConfig,
     loadConfig: LoadConfigDefault,

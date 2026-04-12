@@ -124,12 +124,12 @@ export class PageRouter {
 }
 
 /**
- * 扫描目录，查找所有以 "page" 开头的文件
+ * 扫描目录，查找所有文件名为 "page" 的页面文件
  * @param dirPath - 要扫描的目录路径
  * @returns 匹配的文件路径数组
  * @example
- * const files = await scanPageFiles("./src/pages");
- * // 返回: ["src/pages/pageHome.tsx", "src/pages/pageAbout.tsx"]
+ * const files = await scanPageFiles("./src/app");
+ * // 返回: ["src/app/home/page.tsx", "src/app/blog/page.jsx"]
  */
 export async function scanPageFiles(dirPath: string): Promise<string[]> {
     const fileList: string[] = [];
@@ -143,10 +143,7 @@ export async function scanPageFiles(dirPath: string): Promise<string[]> {
             if (stat.isDirectory()) {
                 const subFiles = await scanPageFiles(fullPath);
                 fileList.push(...subFiles);
-            } else if (
-                (file.endsWith(".jsx") || file.endsWith(".tsx")) &&
-                file.startsWith("page")
-            ) {
+            } else if (file === "page.tsx" || file === "page.jsx") {
                 fileList.push(fullPath);
             }
         }
@@ -159,20 +156,21 @@ export async function scanPageFiles(dirPath: string): Promise<string[]> {
 
 /**
  * 从文件路径生成页面定义
+ * 规则：
+ * - 页面文件必须为目录下的 page.tsx/page.jsx
+ * - 页面名 = page 文件所属目录名
+ * - 路由 = 所属目录相对 app 根目录的路径
  * @param filePath - 页面文件路径
+ * @param rootDir - app 根目录路径
  * @returns 页面定义对象
- * @example
- * // 文件: "src/pages/pageHome.tsx" -> name: "Home", route: "/home"
- * // 文件: "src/pages/pagePostDetail.tsx" -> name: "PostDetail", route: "/post/detail"
  */
-export function generatePageFromPath(filePath: string): SSRPage {
-    const fileName = path.basename(filePath, path.extname(filePath));
-    // "pageHome" -> "Home"
-    const name = fileName.replace(/^page/, "");
-    // "Home" -> "/home", "PostDetail" -> "/post/detail"
-    const route = "/" + name.replace(/([A-Z])/g, (match, offset) =>
-        offset === 0 ? match.toLowerCase() : "/" + match.toLowerCase()
-    );
+export function generatePageFromPath(filePath: string, rootDir?: string): SSRPage {
+    const pageDir = path.dirname(filePath);
+    const appRoot = rootDir ? path.resolve(rootDir) : pageDir;
+    const relativeDir = path.relative(appRoot, pageDir);
+    const name = path.basename(pageDir);
+    const normalizedRelativeDir = relativeDir.split(path.sep).filter(Boolean).join("/");
+    const route = normalizedRelativeDir ? `/${normalizedRelativeDir}` : "/";
 
     return {
         name,
@@ -192,7 +190,7 @@ export async function generateRoutes(dirPath: string): Promise<PageRouter> {
     const files = await scanPageFiles(dirPath);
 
     for (const file of files) {
-        const page = generatePageFromPath(file);
+        const page = generatePageFromPath(file, dirPath);
         router.registerPage(page);
     }
 

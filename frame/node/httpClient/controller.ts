@@ -1,6 +1,6 @@
 import {HttpClient, HttpHandler, HttpServer} from './httpClient';
 import {HTTPClientConfig, HttpServerConfig, ResponseConfig} from "../config";
-import {request, response} from "./type";
+import {response} from "./type";
 
 const PostUrl = '/post';
 
@@ -24,17 +24,61 @@ export class httpController {
      * HTTP 处理器实例
      */
     private httpHandler: HttpHandler = new HttpHandler();
+    private server: HttpServer | null = null;
 
     /**
      * 处理请求
      * 注册路由并启动 HTTP 服务器
      * @returns {Promise<void>}
      */
-    async requestDeal() {
-        this.httpHandler.post('/',(ctx)=>{
-        })
-        const sever = new HttpServer(this.httpHandler,HttpServerConfig)
-        await sever.start()
+    async requestDeal(
+        renderHandler?: (route: string, payload: unknown) => Promise<{
+            html: string;
+            route: string;
+            error?: string;
+        }>
+    ) {
+        this.httpHandler.get('/health', () => {
+            return {
+                status: 'ok',
+                uptime: process.uptime(),
+            };
+        });
+
+        this.httpHandler.post(PostUrl, async (ctx) => {
+            return this.requestPost(ctx.body as response);
+        });
+
+        this.httpHandler.get('*', async (ctx) => {
+            if (!renderHandler) {
+                return {
+                    status: 503,
+                    data: { error: 'Render handler is not initialized' },
+                };
+            }
+            const renderResult = await renderHandler(ctx.path, {
+                query: ctx.query,
+                body: ctx.body,
+                headers: ctx.headers,
+                method: ctx.method,
+                ip: ctx.ip,
+            });
+            if (renderResult.error) {
+                return {
+                    status: 404,
+                    data: renderResult.error,
+                    headers: { "Content-Type": "text/plain; charset=utf-8" },
+                };
+            }
+            return {
+                status: 200,
+                data: renderResult.html,
+                headers: { "Content-Type": "text/html; charset=utf-8" },
+            };
+        });
+
+        this.server = new HttpServer(this.httpHandler, HttpServerConfig);
+        await this.server.start();
     }
 
     /**
@@ -51,10 +95,10 @@ export class httpController {
      * ```
      */
     public async requestPost(res:response) {
-        const REQUEST_COOKIE = 'sessionId=abc123; token=xyz789';
+        const targetUrl = `${ResponseConfig.path}${ResponseConfig.url}`;
         try {
             const response = await this.httpClient.post(
-                ResponseConfig.url + ResponseConfig.url ,
+                targetUrl,
                 res,
                 {
                     headers: {
@@ -69,5 +113,9 @@ export class httpController {
             console.error('POST 请求失败:', error);
             throw error;
         }
+    }
+
+    getServer() {
+        return this.server;
     }
 }

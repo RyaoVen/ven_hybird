@@ -691,6 +691,16 @@ export class HttpHandler {
      * @returns 是否匹配
      */
     private matchPath(pattern: string, path: string): boolean {
+        if (pattern === "*" || pattern === "/*") {
+            return true;
+        }
+        if (pattern.endsWith("/*")) {
+            const prefix = pattern.slice(0, -2);
+            if (prefix === "") {
+                return true;
+            }
+            return path === prefix || path.startsWith(`${prefix}/`);
+        }
         const patternParts = pattern.split("/");
         const pathParts = path.split("/");
 
@@ -740,18 +750,21 @@ export class HttpHandler {
      */
     private async executeMiddlewares(ctx: RequestContext, handler: RouteHandler): Promise<unknown> {
         let index = 0;
+        let handlerResult: unknown;
 
         const next = async (): Promise<void> => {
             if (index < this.middlewares.length) {
                 const middleware = this.middlewares[index++];
                 await middleware(ctx, next);
             } else {
-                // 所有中间件执行完毕，执行路由处理器
-                return handler(ctx) as Promise<void>;
+                handlerResult = await handler(ctx);
             }
         };
 
         await next();
+        if (handlerResult !== undefined) {
+            return handlerResult;
+        }
         return ctx.body;
     }
 
@@ -797,6 +810,24 @@ export class HttpHandler {
 
             // 执行中间件和处理器
             const result = await this.executeMiddlewares(ctx, route.handler);
+
+            if (
+                result &&
+                typeof result === "object" &&
+                "status" in result &&
+                "data" in result
+            ) {
+                const responseResult = result as {
+                    status: number;
+                    data: unknown;
+                    headers?: Record<string, string>;
+                };
+                return {
+                    status: responseResult.status,
+                    data: responseResult.data,
+                    headers: responseResult.headers,
+                };
+            }
 
             return {
                 status: 200,

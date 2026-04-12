@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import * as fs from "node:fs";
 import { SSRPage } from "./routerGenerate";
 
 /**
@@ -62,7 +63,9 @@ export class SSRLoader {
      */
     registerPage(page: SSRPage): void {
         if (page.enabled === false) return;
-        const filePath = path.resolve(this.pagesDir, `${page.name}${this.ext}`);
+        const pageFilePath = path.resolve(this.pagesDir, `${page.name}${this.ext}`);
+        const fallbackFilePath = path.resolve(this.pagesDir, `entry-server${this.ext}`);
+        const filePath = fs.existsSync(pageFilePath) ? pageFilePath : fallbackFilePath;
         this.routePathMap.set(page.route, filePath);
     }
 
@@ -95,7 +98,11 @@ export class SSRLoader {
             .replace(/^\//, "")
             .replace(/\/:/g, "_")
             .replace(/\//g, "_");
-        return path.resolve(targetDir, `${pageName}${targetExt}`);
+        const routeFilePath = path.resolve(targetDir, `${pageName}${targetExt}`);
+        if (fs.existsSync(routeFilePath)) {
+            return routeFilePath;
+        }
+        return path.resolve(targetDir, `entry-server${targetExt}`);
     }
 
     /**
