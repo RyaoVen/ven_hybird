@@ -2,7 +2,6 @@ import type { SPAClientOptions } from "./pageBuild/SPAbuild";
 import type { SSRBuildOptions } from "./pageBuild/SSRbuild";
 import type { LoadConfig, FilterMode } from "./pageBuild/SSRrenderController";
 import {HttpServerOptions} from "./httpClient/httpClient";
-import {response} from "./httpClient/type";
 
 /**
  * SPA 客户端构建配置

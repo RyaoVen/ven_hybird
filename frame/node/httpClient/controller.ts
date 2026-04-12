@@ -1,8 +1,8 @@
 import {HttpClient, HttpHandler, HttpServer} from './httpClient';
 import {HTTPClientConfig, HttpServerConfig, ResponseConfig} from "../config";
-import {response} from "./type";
+import {request, response} from "./type";
 
-const PostUrl = '/post';
+const RenderRoute = '/render';
 
 /**
  * HTTP 控制器类
@@ -32,9 +32,10 @@ export class httpController {
      * @returns {Promise<void>}
      */
     async requestDeal(
-        renderHandler?: (route: string, payload: unknown) => Promise<{
+        renderHandler?: (task: request) => Promise<{
             html: string;
-            route: string;
+            router: string;
+            pagename: string;
             error?: string;
         }>
     ) {
@@ -45,35 +46,32 @@ export class httpController {
             };
         });
 
-        this.httpHandler.post(PostUrl, async (ctx) => {
-            return this.requestPost(ctx.body as response);
-        });
-
-        this.httpHandler.get('*', async (ctx) => {
+        this.httpHandler.post(RenderRoute, async (ctx) => {
             if (!renderHandler) {
                 return {
                     status: 503,
-                    data: { error: 'Render handler is not initialized' },
+                    data: { error: 'Render handler is not initialized' }
                 };
             }
-            const renderResult = await renderHandler(ctx.path, {
-                query: ctx.query,
-                body: ctx.body,
-                headers: ctx.headers,
-                method: ctx.method,
-                ip: ctx.ip,
-            });
-            if (renderResult.error) {
+
+            const task = ctx.body as request;
+            if (!task || !task.router || !task.pagename || task.hookId === undefined || task.hookId === null) {
                 return {
-                    status: 404,
-                    data: renderResult.error,
-                    headers: { "Content-Type": "text/plain; charset=utf-8" },
+                    status: 400,
+                    data: { error: "Invalid task body: hookId/router/pagename are required" },
                 };
             }
+
+            void this.processRenderTask(task, renderHandler);
+
             return {
-                status: 200,
-                data: renderResult.html,
-                headers: { "Content-Type": "text/html; charset=utf-8" },
+                status: 202,
+                data: {
+                    status: "accepted",
+                    hookId: task.hookId,
+                    router: task.router,
+                    pagename: task.pagename,
+                },
             };
         });
 
@@ -95,7 +93,7 @@ export class httpController {
      * ```
      */
     public async requestPost(res:response) {
-        const targetUrl = `${ResponseConfig.path}${ResponseConfig.url}`;
+        const targetUrl = `${ResponseConfig.path}${ResponseConfig.url}` || "/";
         try {
             const response = await this.httpClient.post(
                 targetUrl,
@@ -112,6 +110,39 @@ export class httpController {
         } catch (error) {
             console.error('POST 请求失败:', error);
             throw error;
+        }
+    }
+
+    private async processRenderTask(
+        task: request,
+        renderHandler: (task: request) => Promise<{ html: string; router: string; pagename: string; error?: string }>
+    ): Promise<void> {
+        const startAt = Date.now();
+        try {
+            const result = await renderHandler(task);
+            const callbackBody: response = {
+                hookId: task.hookId,
+                html: result.html,
+                router: result.router,
+                pagename: result.pagename,
+                error: result.error,
+                duration: Date.now() - startAt,
+            };
+            await this.requestPost(callbackBody);
+        } catch (error) {
+            const callbackBody: response = {
+                hookId: task.hookId,
+                html: "",
+                router: task.router,
+                pagename: task.pagename,
+                error: (error as Error).message,
+                duration: Date.now() - startAt,
+            };
+            try {
+                await this.requestPost(callbackBody);
+            } catch (postError) {
+                console.error('任务回发失败:', (postError as Error).message);
+            }
         }
     }
 
