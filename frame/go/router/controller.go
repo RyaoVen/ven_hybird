@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"ven_hybird/http"
 	"ven_hybird/types"
 
@@ -13,7 +14,7 @@ type ControllerConfig struct {
 
 type Controller struct {
 	router      *PageRouter
-	httpHandler *http.HTTPHandler
+	httpHandler *handler.HTTPHandler
 	app         *fiber.App
 }
 
@@ -41,7 +42,11 @@ func (controller *Controller) GenerateStaticRouter(staticPages []types.StaticPag
 		}
 
 		controller.app.Get(route, func(c *fiber.Ctx) error {
-			return c.SendString(controller.httpHandler.GetPageHTML(page))
+			html, err := controller.httpHandler.GetPageHTML(context.Background(), page)
+			if err != nil {
+				return c.Status(500).SendString(err.Error())
+			}
+			return c.SendString(html)
 		})
 	}
 }
@@ -66,7 +71,11 @@ func (controller *Controller) GenerateDynamicRouter(dynamicPages []types.Dynamic
 				paramName := param[1:]
 				params[paramName] = c.Params(paramName)
 			}
-			return c.SendString(controller.httpHandler.GetDynamicPageHTML(page, params))
+			html, err := controller.httpHandler.GetDynamicPageHTML(context.Background(), page, params)
+			if err != nil {
+				return c.Status(500).SendString(err.Error())
+			}
+			return c.SendString(html)
 		})
 	}
 }

@@ -1,6 +1,6 @@
-import { createPageBuild } from "./pageBuild/pageBuild";
-import { httpController } from "./httpClient/controller";
-import { request } from "./httpClient/type";
+import { createPageBuild } from "./page-builder/pageBuilder";
+import { httpController } from "./http-transport/httpController";
+import { request } from "./http-transport/types";
 import { HttpServerConfig } from "./config";
 
 async function main(): Promise<void> {

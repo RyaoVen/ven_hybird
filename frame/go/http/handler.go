@@ -1,4 +1,4 @@
-package http
+package handler
 
 import (
 	"context"
@@ -55,22 +55,22 @@ type HTTPRequest struct {
  * @returns {*HTTPRequest} HTTPRequest实例
  */
 func NewHTTPRequest(config HTTPRequestConfig) *HTTPRequest {
+	// 统一填充默认值到 config 本身，确保后续逻辑一致性
+	if config.MaxConnsPerHost == 0 {
+		config.MaxConnsPerHost = 100
+	}
+	if config.MaxIdleConnDuration == 0 {
+		config.MaxIdleConnDuration = 30 * time.Second
+	}
+	if config.Timeout == 0 {
+		config.Timeout = 30 * time.Second
+	}
+
 	client := &fasthttp.Client{
 		MaxConnsPerHost:     config.MaxConnsPerHost,
 		MaxIdleConnDuration: config.MaxIdleConnDuration,
 		ReadTimeout:         config.Timeout,
 		WriteTimeout:        config.Timeout,
-	}
-
-	if config.MaxConnsPerHost == 0 {
-		client.MaxConnsPerHost = 100
-	}
-	if config.MaxIdleConnDuration == 0 {
-		client.MaxIdleConnDuration = 30 * time.Second
-	}
-	if config.Timeout == 0 {
-		client.ReadTimeout = 30 * time.Second
-		client.WriteTimeout = 30 * time.Second
 	}
 
 	return &HTTPRequest{
@@ -93,7 +93,7 @@ type RequestResult struct {
 
 /**
  * DoRequest - 执行HTTP请求
- * @param {context.Context} ctx - 上下文
+ * @param {context.Context} ctx - 上下文（用于取消请求）
  * @param {string} method - 请求方法 (GET, POST, PUT, DELETE等)
  * @param {string} path - 请求路径
  * @param {map[string]string} params - 查询参数
@@ -122,7 +122,22 @@ func (r *HTTPRequest) DoRequest(ctx context.Context, method, path string, params
 		req.SetBody(body)
 	}
 
-	err := r.client.DoTimeout(req, resp, r.config.Timeout)
+	// 使用 context 控制请求取消
+	// 如果 context 已取消，直接返回错误
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	// 计算截止时间：优先使用 context 的 deadline，否则使用配置的超时时间
+	deadline := time.Now().Add(r.config.Timeout)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
+	}
+
+	// 使用 DoDeadline 支持截止时间控制
+	err := r.client.DoDeadline(req, resp, deadline)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -169,12 +184,18 @@ func (r *HTTPRequest) Post(ctx context.Context, path string, params map[string]s
 
 /**
  * buildURL - 构建完整URL
- * @param {string} path - 请求路径
+ * @param {string} path - 请求路径（自动补全前导斜杠）
  * @param {map[string]string} params - 查询参数
  * @returns {string} 完整URL
  */
 func (r *HTTPRequest) buildURL(path string, params map[string]string) string {
 	baseURL := strings.TrimSuffix(r.config.BaseURL, "/")
+
+	// 确保 path 以 / 开头，避免拼接错误
+	if len(path) > 0 && path[0] != '/' {
+		path = "/" + path
+	}
+
 	fullPath := path
 
 	if len(params) > 0 {
@@ -265,9 +286,9 @@ func (r *HTTPResponse) RegisterRoute(method, path string, handler fiber.Handler)
 
 /**
  * Use - 添加中间件
- * @param {...interface{}} args - 中间件参数
+ * @param {...any} args - 中间件参数
  */
-func (r *HTTPResponse) Use(args ...interface{}) {
+func (r *HTTPResponse) Use(args ...any) {
 	r.app.Use(args...)
 }
 
@@ -285,16 +306,16 @@ type HTTPHandler struct {
  * NewHTTPHandler - 创建HTTPHandler实例
  * @param {HTTPRequestConfig} requestConfig - HTTP请求配置
  * @param {HTTPResponseConfig} responseConfig - HTTP响应配置
- * @returns {*HTTPHandler, error} HTTPHandler实例和错误
+ * @returns {*HTTPHandler} HTTPHandler实例
  */
-func NewHTTPHandler(requestConfig HTTPRequestConfig, responseConfig HTTPResponseConfig) (*HTTPHandler, error) {
+func NewHTTPHandler(requestConfig HTTPRequestConfig, responseConfig HTTPResponseConfig) *HTTPHandler {
 	request := NewHTTPRequest(requestConfig)
 	response := NewHTTPResponse(responseConfig)
 
 	return &HTTPHandler{
 		request:  request,
 		response: response,
-	}, nil
+	}
 }
 
 /**
@@ -315,44 +336,62 @@ func (h *HTTPHandler) GetResponse() *HTTPResponse {
 
 /**
  * GetPageHTML - 根据静态页面实例返回HTML
+ * @param {context.Context} ctx - 上下文（由调用方控制超时和取消）
  * @param {types.StaticPage} page - 静态页面实例
- * @returns {string} HTML内容
+ * @returns {string, error} HTML内容和错误
  */
-func (h *HTTPHandler) GetPageHTML(page types.StaticPage) string {
+func (h *HTTPHandler) GetPageHTML(ctx context.Context, page types.StaticPage) (string, error) {
 	if !page.Enabled {
-		return ""
+		return "", fmt.Errorf("page is disabled")
 	}
 
-	result, err := h.request.Get(context.Background(), page.Route, nil, nil)
+	result, err := h.request.Get(ctx, page.Route, nil, nil)
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("get page html failed: %w", err)
 	}
 
-	return string(result.Body)
+	return string(result.Body), nil
 }
 
 /**
  * GetDynamicPageHTML - 根据动态页面实例与参数返回HTML
+ *
+ * 占位符规则：
+ *   - page.Params 存储占位符名称，格式为 ":id"（以冒号开头）
+ *   - page.Route 中对应段也使用 ":id" 格式，如 "/user/:id"
+ *   - params map 的 key 应为参数名（不带冒号），即 "id"
+ *
+ * @param {context.Context} ctx - 上下文（由调用方控制超时和取消）
  * @param {types.DynamicPage} page - 动态页面实例
- * @param {map[string]string} params - 动态参数映射
- * @returns {string} HTML内容
+ * @param {map[string]string} params - 动态参数映射（key 为参数名，不带冒号）
+ * @returns {string, error} HTML内容和错误
  */
-func (h *HTTPHandler) GetDynamicPageHTML(page types.DynamicPage, params map[string]string) string {
+func (h *HTTPHandler) GetDynamicPageHTML(ctx context.Context, page types.DynamicPage, params map[string]string) (string, error) {
 	if !page.Enabled {
-		return ""
+		return "", fmt.Errorf("page is disabled")
 	}
 
-	route := page.Route
-	for _, param := range page.Params {
-		if value, ok := params[param]; ok {
-			route = strings.Replace(route, param, value, 1)
+	// 将路由按 / 分段，逐段检查和替换占位符
+	// 这避免了 strings.Replace 可能误伤非路由段的问题
+	segments := strings.Split(page.Route, "/")
+	for i, seg := range segments {
+		// 检查是否是占位符段（以 : 开头）
+		if strings.HasPrefix(seg, ":") {
+			paramName := seg[1:] // 去掉冒号得到参数名，如 ":id" → "id"
+			if value, ok := params[paramName]; ok {
+				// 对值进行 URL escape，防止特殊字符（/、空格、?等）破坏路由
+				segments[i] = url.PathEscape(value)
+			}
+			// 如果没有提供参数值，保留占位符段
 		}
 	}
 
-	result, err := h.request.Get(context.Background(), route, nil, nil)
+	route := strings.Join(segments, "/")
+
+	result, err := h.request.Get(ctx, route, nil, nil)
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("get dynamic page html failed: %w", err)
 	}
 
-	return string(result.Body)
+	return string(result.Body), nil
 }

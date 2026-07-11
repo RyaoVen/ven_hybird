@@ -1,13 +1,13 @@
-import type { SPAClientOptions } from "./pageBuild/SPAbuild";
-import type { SSRBuildOptions } from "./pageBuild/SSRbuild";
-import type { LoadConfig, FilterMode } from "./pageBuild/SSRrenderController";
-import {HttpServerOptions} from "./httpClient/httpClient";
+import type { SPAClientOptions } from "./page-builder/spaBuilder";
+import type { SSRBuildOptions } from "./page-builder/ssrBuilder";
+import type { LoadConfig, FilterMode } from "./page-builder/ssrRenderController";
+import {HttpServerOptions} from "./http-transport/httpClient";
 
 /**
  * SPA 客户端构建配置
  */
 export const SPAClientConfig: SPAClientOptions = {
-    entryPoint: "./build/app/entry-client.tsx",
+    entryPoint: "../../src/entry-client.tsx",
     minify: true,
     sourcemap: "external",
     external: [],
@@ -39,7 +39,7 @@ export const SPAClientConfig: SPAClientOptions = {
  * SSR 服务端构建配置
  */
 export const SSRBuildConfig: SSRBuildOptions = {
-    entryPoint: "./build/app/entry-server.tsx",
+    entryPoint: "../../src/entry-server.tsx",
     minify: true,
     sourcemap: "external",
     external: [],
@@ -94,7 +94,7 @@ export interface PageBuildConfig {
  */
 export const PageBuildDefaultConfig: PageBuildConfig = {
     isDev: false,
-    pagesDir: "./build/app/pages",
+    pagesDir: "../../src/pages",
     outputDir: "./build",
     ssrPagesDir: "./build",
     spa: SPAClientConfig,
