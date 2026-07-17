@@ -1,3 +1,4 @@
 /frame/node/node_modules/
 /frame/node/dist/
 /frame/node/build/
+/frame/node/.generated/

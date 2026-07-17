@@ -1,49 +1,40 @@
+/**
+ * @file SSR 渲染服务入口
+ * @description 构建页面产物后启动 HTTP 服务器，接收渲染请求并通过回调返回结果
+ */
+import { HttpController } from "./http-transport/httpController";
+import { RenderTask } from "./http-transport/types";
+import { HttpServerConfig, WorkerConfig } from "./config";
 import { createPageBuild } from "./page-builder/pageBuilder";
-import { httpController } from "./http-transport/httpController";
-import { request } from "./http-transport/types";
-import { HttpServerConfig } from "./config";
 
+/**
+ * 服务主函数：构建 -> 启动 HTTP 服务 -> 注册渲染处理
+ * @throws 构建失败时抛出 Error
+ */
 async function main(): Promise<void> {
     const pageBuild = createPageBuild();
     const buildResult = await pageBuild.build();
-
     if (!buildResult.success) {
         throw new Error(
-            `构建失败: ${buildResult.spaError?.message ?? ""} ${buildResult.ssrError?.message ?? ""}`.trim()
+            `构建失败: ${buildResult.spaError?.message ?? ""} ${buildResult.ssrError?.message ?? ""}`.trim(),
         );
     }
 
-    const controller = new httpController();
-    await controller.requestDeal(async (task: request) => {
-        const page = pageBuild.getPageByRoute(task.router);
-        if (!page) {
-            return {
-                html: "",
-                router: task.router,
-                pagename: task.pagename,
-                error: `Route "${task.router}" not found`,
-            };
-        }
-        if (page.name !== task.pagename) {
-            return {
-                html: "",
-                router: task.router,
-                pagename: task.pagename,
-                error: `Page name mismatch: expect "${page.name}", got "${task.pagename}"`,
-            };
-        }
-        const renderResult = await pageBuild.render(task.router, task.payload ?? {});
-        return {
-            html: renderResult.html,
-            router: task.router,
-            pagename: task.pagename,
-            error: renderResult.error,
-        };
+    const controller = new HttpController({
+        server: HttpServerConfig,
+        callbackURL: WorkerConfig.callbackURL,
+        internalToken: WorkerConfig.internalToken,
+        callbackTimeout: WorkerConfig.callbackTimeout,
+        maxConcurrentRenders: WorkerConfig.maxConcurrentRenders,
     });
 
-    const pages = pageBuild.getPages().map((page) => page.route);
-    console.log("页面路由:", pages);
+    await controller.requestDeal(async (task: RenderTask) => {
+        return pageBuild.render(task.requestRoute, task.payload);
+    });
+
+    console.log("页面路由:", pageBuild.getRouter().getPages().map((page) => page.route));
     console.log("任务入口: POST /render");
+    console.log(`回调地址: ${WorkerConfig.callbackURL}`);
     console.log(`HTTP 服务已启动: http://${HttpServerConfig.host}:${HttpServerConfig.port}`);
 }
 

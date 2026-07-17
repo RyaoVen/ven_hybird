@@ -1,20 +1,40 @@
+// VenHybird Go 网关入口，负责 HTTP 请求接收和 SSR 任务调度。
 package main
 
 import (
-	"fmt"
+	"log"
+
+	"ven_hybird/internal/config"
+	"ven_hybird/internal/httpserver"
+	"ven_hybird/internal/ssr"
 )
 
-//TIP <p>To run your code, right-click the code and select <b>Run</b>.</p> <p>Alternatively, click
-// the <icon src="AllIcons.Actions.Execute"/> icon in the gutter and select the <b>Run</b> menu item from here.</p>
+// main 初始化各组件并启动 HTTP 服务器。
 func main() {
-	//TIP <p>Press <shortcut actionId="ShowIntentionActions"/> when your caret is at the underlined text
-	// to see how GoLand suggests fixing the warning.</p><p>Alternatively, if available, click the lightbulb to view possible fixes.</p>
-	s := "gopher"
-	fmt.Println("Hello and welcome, %s!", s)
+	// 步骤 1: 从环境变量加载配置，包含所有运行时参数
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	for i := 1; i <= 5; i++ {
-		//TIP <p>To start your debugging session, right-click your code in the editor and select the Debug option.</p> <p>We have set one <icon src="AllIcons.Debugger.Db_set_breakpoint"/> breakpoint
-		// for you, but you can always add more by pressing <shortcut actionId="ToggleLineBreakpoint"/>.</p>
-		fmt.Println("i =", 100/i)
+	// 步骤 2: 创建 Node.js SSR 工作节点的 HTTP 客户端
+	// 用于向 Node 端提交渲染任务
+	client := ssr.NewNodeClient(cfg.NodeWorkerURL, cfg.NodeSubmitTimeout, cfg.InternalToken)
+
+	// 步骤 3: 创建 pending 任务注册中心
+	// 管理所有等待 Node 端渲染回调的异步任务
+	pending := ssr.NewPendingRegistry(cfg.MaxPendingRenders)
+
+	// 步骤 4: 创建 HTTP 服务器，注入所有依赖组件
+	// 使用 CryptoHookIDGenerator 生成加密安全的唯一请求标识
+	server := httpserver.New(cfg, client, pending, ssr.CryptoHookIDGenerator{})
+
+	// 步骤 5: 注册所有 HTTP 路由
+	server.RegisterRoutes()
+
+	// 步骤 6: 启动 HTTP 服务器，开始监听指定地址
+	log.Printf("VenHybird Go gateway listening on %s", cfg.ListenAddr)
+	if err := server.App().Listen(cfg.ListenAddr); err != nil {
+		log.Fatal(err)
 	}
 }

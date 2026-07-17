@@ -1,152 +1,167 @@
-import {HttpClient, HttpHandler, HttpServer} from './httpClient';
-import {HTTPClientConfig, HttpServerConfig, ResponseConfig} from "../config";
-import {request, response} from "./types";
+/**
+ * @file HTTP 渲染控制器模块
+ * @description SSR 渲染服务的 HTTP 接入层，接收渲染请求、控制并发、异步执行并通过回调返回结果
+ */
+import { HttpClient, HttpHandler, HttpServer, HttpServerOptions } from "./httpClient";
+import { RenderExecutionGate } from "./renderExecutionGate";
+import { RenderCallback, RenderError, RenderTask } from "./types";
 
-const RenderRoute = '/render';
+/** 渲染任务接收路由 */
+const renderRoute = "/render";
+
+/** HTTP 控制器配置 */
+export interface HttpControllerOptions {
+    server: HttpServerOptions;          /** HTTP 服务器配置 */
+    callbackURL: string;                /** 渲染结果回调 URL */
+    internalToken?: string;             /** 内部通信 token */
+    callbackTimeout: number;            /** 回调超时（毫秒） */
+    maxConcurrentRenders: number;       /** 最大并发渲染数 */
+}
+
+/** 渲染处理函数类型 */
+export type RenderHandler = (task: RenderTask) => Promise<{
+    html: string;
+    requestRoute: string;
+    matchedRoute: string;
+    pageName: string;
+}>;
 
 /**
- * HTTP 控制器类
- * 用于处理 HTTP 请求和响应
+ * HTTP 渲染控制器
+ * @description 管理渲染请求的接收、验证、并发控制和异步回调
  */
-export class httpController {
-    /**
-     * HTTP 客户端实例
-     */
-    private httpClient: HttpClient = new HttpClient(
-        HTTPClientConfig.responseURL,
-        {
-            headers: HTTPClientConfig.headers,
-            timeout: HTTPClientConfig.timeout
-        }
-    )
-
-    /**
-     * HTTP 处理器实例
-     */
-    private httpHandler: HttpHandler = new HttpHandler();
+export class HttpController {
+    private readonly httpHandler = new HttpHandler();
+    private readonly callbackClient: HttpClient;
+    private readonly gate: RenderExecutionGate;
     private server: HttpServer | null = null;
 
+    /** @param options - 控制器配置 */
+    constructor(private readonly options: HttpControllerOptions) {
+        this.callbackClient = new HttpClient(options.callbackURL, {
+            timeout: options.callbackTimeout,
+            headers: { "Content-Type": "application/json" },
+        });
+        this.gate = new RenderExecutionGate(options.maxConcurrentRenders);
+    }
+
     /**
-     * 处理请求
      * 注册路由并启动 HTTP 服务器
-     * @returns {Promise<void>}
+     * @description GET /health 健康检查；POST /render 接收渲染任务（异步执行，立即返回 202）
+     * @param renderHandler - 渲染处理函数
      */
-    async requestDeal(
-        renderHandler?: (task: request) => Promise<{
-            html: string;
-            router: string;
-            pagename: string;
-            error?: string;
-        }>
-    ) {
-        this.httpHandler.get('/health', () => {
-            return {
-                status: 'ok',
-                uptime: process.uptime(),
-            };
-        });
+    async requestDeal(renderHandler: RenderHandler): Promise<void> {
+        this.httpHandler.get("/health", () => ({
+            status: "ok",
+            activeRenders: this.gate.size(),
+        }));
 
-        this.httpHandler.post(RenderRoute, async (ctx) => {
-            if (!renderHandler) {
+        this.httpHandler.post(renderRoute, async (ctx) => {
+            if (!this.isInternalRequest(ctx.headers)) {
+                return { status: 401, data: { error: "Invalid internal token" } };
+            }
+
+            const task = ctx.body as Partial<RenderTask> | null;
+            if (!task || !isRenderTask(task)) {
+                return { status: 400, data: { error: "hookId, requestRoute and payload are required" } };
+            }
+
+            const acquired = this.gate.acquire(task.hookId);
+            if (!acquired.ok) {
                 return {
-                    status: 503,
-                    data: { error: 'Render handler is not initialized' }
+                    status: acquired.reason === "duplicate" ? 409 : 503,
+                    data: { error: acquired.reason === "duplicate" ? "Render task already exists" : "Render worker is busy" },
                 };
             }
 
-            const task = ctx.body as request;
-            if (!task || !task.router || !task.pagename || task.hookId === undefined || task.hookId === null) {
-                return {
-                    status: 400,
-                    data: { error: "Invalid task body: hookId/router/pagename are required" },
-                };
-            }
+            void this.processRenderTask(task, renderHandler)
+                .catch((error) => console.error("Unexpected render task failure:", (error as Error).message))
+                .finally(() => this.gate.release(task.hookId));
 
-            void this.processRenderTask(task, renderHandler);
-
-            return {
-                status: 202,
-                data: {
-                    status: "accepted",
-                    hookId: task.hookId,
-                    router: task.router,
-                    pagename: task.pagename,
-                },
-            };
+            return { status: 202, data: { status: "accepted", hookId: task.hookId } };
         });
 
-        this.server = new HttpServer(this.httpHandler, HttpServerConfig);
+        this.server = new HttpServer(this.httpHandler, this.options.server);
         await this.server.start();
     }
 
-    /**
-     * 发起 POST 请求
-     * 使用 HttpClient 发送 HTTP POST 请求到指定地址
-     * @param {response} res - 响应对象
-     * @returns {Promise<unknown>} 返回响应数据
-     * @throws {Error} 请求失败时抛出错误
-     * @example
-     * ```typescript
-     * const controller = new httpController();
-     * const result = await controller.requestPost(responseData);
-     * console.log(result);
-     * ```
-     */
-    public async requestPost(res:response) {
-        const targetUrl = `${ResponseConfig.path}${ResponseConfig.url}` || "/";
-        try {
-            const response = await this.httpClient.post(
-                targetUrl,
-                res,
-                {
-                    headers: {
-                        'Cookie': ResponseConfig.Cookie,
-                        'Content-Type': ResponseConfig.Content_Type
-                    }
-                }
-            );
-            console.log('POST 请求成功:', response);
-            return response;
-        } catch (error) {
-            console.error('POST 请求失败:', error);
-            throw error;
-        }
-    }
+    /** 获取 HTTP 服务器实例 */
+    getServer(): HttpServer | null { return this.server; }
 
-    private async processRenderTask(
-        task: request,
-        renderHandler: (task: request) => Promise<{ html: string; router: string; pagename: string; error?: string }>
-    ): Promise<void> {
+    /**
+     * 异步处理渲染任务并通过回调返回结果
+     * @param task - 渲染任务
+     * @param renderHandler - 渲染处理函数
+     */
+    private async processRenderTask(task: RenderTask, renderHandler: RenderHandler): Promise<void> {
         const startAt = Date.now();
         try {
             const result = await renderHandler(task);
-            const callbackBody: response = {
+            await this.postCallback({
                 hookId: task.hookId,
+                requestRoute: result.requestRoute,
+                matchedRoute: result.matchedRoute,
+                pageName: result.pageName,
                 html: result.html,
-                router: result.router,
-                pagename: result.pagename,
-                error: result.error,
                 duration: Date.now() - startAt,
-            };
-            await this.requestPost(callbackBody);
+            });
         } catch (error) {
-            const callbackBody: response = {
-                hookId: task.hookId,
-                html: "",
-                router: task.router,
-                pagename: task.pagename,
-                error: (error as Error).message,
-                duration: Date.now() - startAt,
-            };
+            const renderError = toRenderError(error);
             try {
-                await this.requestPost(callbackBody);
-            } catch (postError) {
-                console.error('任务回发失败:', (postError as Error).message);
+                await this.postCallback({
+                    hookId: task.hookId, requestRoute: task.requestRoute,
+                    html: "", error: renderError, duration: Date.now() - startAt,
+                });
+            } catch (callbackError) {
+                console.error("Render callback delivery failed:", (callbackError as Error).message);
             }
         }
     }
 
-    getServer() {
-        return this.server;
+    /**
+     * 发送渲染结果回调
+     * @param callback - 回调数据
+     * @throws 非 2xx 响应时抛出 Error
+     */
+    private async postCallback(callback: RenderCallback): Promise<void> {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (this.options.internalToken) headers["X-Ven-Internal-Token"] = this.options.internalToken;
+        const response = await this.callbackClient.post("", callback, { headers });
+        if (response.status < 200 || response.status >= 300) {
+            throw new Error(`Render callback rejected: HTTP ${response.status}`);
+        }
     }
+
+    /** 验证内部请求 token */
+    private isInternalRequest(headers: Record<string, string>): boolean {
+        if (!this.options.internalToken) return true;
+        return headers["x-ven-internal-token"] === this.options.internalToken;
+    }
+}
+
+/** 类型守卫：验证请求体是否为合法 RenderTask */
+function isRenderTask(task: Partial<RenderTask>): task is RenderTask {
+    return typeof task.hookId === "string" && task.hookId.length > 0 &&
+        typeof task.requestRoute === "string" && task.requestRoute.startsWith("/") &&
+        isBootstrap(task.payload);
+}
+
+/** 类型守卫：验证值是否为合法 PageBootstrap */
+function isBootstrap(payload: unknown): payload is RenderTask["payload"] {
+    if (!payload || typeof payload !== "object") return false;
+    const value = payload as RenderTask["payload"];
+    return typeof value.route === "string" &&
+        typeof value.params === "object" && value.params !== null &&
+        typeof value.query === "object" && value.query !== null;
+}
+
+/** 将未知错误转换为 RenderError */
+function toRenderError(error: unknown): RenderError {
+    if (error instanceof Error && error.name === "PageNotFoundError") {
+        return { code: "PAGE_NOT_FOUND", message: error.message };
+    }
+    return {
+        code: "RENDER_FAILED",
+        message: error instanceof Error ? error.message : String(error),
+    };
 }

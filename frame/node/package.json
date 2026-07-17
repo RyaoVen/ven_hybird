@@ -4,10 +4,11 @@
   "description": "",
   "main": "dist/main.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "generate:routes": "ts-node generateRoutes.ts",
+    "build": "npm run generate:routes && tsc -p tsconfig.json",
     "start": "node dist/main.js",
-    "dev": "ts-node main.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "dev": "npm run generate:routes && ts-node main.ts",
+    "typecheck": "npm run generate:routes && tsc --noEmit -p tsconfig.json",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
