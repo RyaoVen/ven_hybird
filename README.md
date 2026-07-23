@@ -1,35 +1,105 @@
 # VenHybird
 
-VenHybird 是一个 Go + Node 的 SSR / SPA 混合渲染实验框架。
-
-- **Go / Fiber** 是唯一公网入口，承载静态资源、后续业务 API、鉴权、数据聚合和 ISR；
-- **Node / React** 是仅内部可访问的页面路由与 SSR worker；
-- 首屏通过 SSR HTML 直出，浏览器随后加载 SPA bundle 并用相同 bootstrap 数据 hydration。
+Go + Node 混合渲染框架。Go 负责网关与数据层，Node 负责页面路由与 SSR 渲染，首屏 SSR 直出后由 SPA 接管。
 
 ## 架构
 
 ```text
 Browser
-  ↓
-Go Fiber :8080
-  ├─ /assets/*
-  ├─ /api/*
-  ├─ /auth/*
-  └─ GET /*
-       ↓ POST /render (202)
-Node SSR worker :3000
-  ├─ src/**/page.tsx routing
-  ├─ React SSR
-  └─ POST /_internal/render-callback
-       ↓
-Go returns HTML
+  │
+  ▼
+Go Fiber :8080  ─── 唯一公网入口
+  ├─ /assets/*           静态资源
+  ├─ /_internal/*        内部端点（渲染回调、健康检查）
+  ├─ /auth/*             鉴权端点
+  ├─ /home, /about ...   业务页面（hybrid 注册，带鉴权 + SSR/JSON 双模式）
+  └─ /*                  兜底 SSR（未注册的页面走默认渲染）
+       │
+       │ POST /render (async, 202)
+       ▼
+Node SSR Worker :3000  ─── 仅内部访问
+  ├─ GET /pages          返回全部页面路由模式（Go 启动时拉取校验）
+  ├─ POST /render        接收渲染任务，React SSR → 回调 Go
+  └─ src/**/page.tsx     页面路由（唯一真相源）
 ```
 
-Node 的页面路由是唯一真相源；Go 不扫描页面目录。
+**核心流程**：Go 启动时从 Node 拉取页面路由模式列表 → 注册业务页面路由 → 请求到达时 cookie 鉴权 → 权限校验 → 执行 handler 拿到数据 → 提交 SSR 渲染 → 返回 HTML 或 JSON。
+
+## 目录结构
+
+```text
+ven_hybird/
+├── src/                        # 前端页面（Node 构建，路由唯一真相源）
+│   ├── home/page.tsx           #   /home
+│   ├── about/page.tsx          #   /about
+│   ├── blog/[id]/page.tsx      #   /blog/:id
+│   ├── app/                    #   页面容器与类型
+│   ├── entry-client.tsx        #   SPA 入口
+│   └── entry-server.tsx        #   SSR 入口
+├── frame/
+│   ├── go/                     # Go 网关
+│   │   ├── main.go             #   启动入口
+│   │   ├── hybrid/             #   胶水层：App、Page、PageCtx
+│   │   ├── build/              #   业务注册：角色 + 页面 handler
+│   │   └── internal/
+│   │       ├── httpserver/     #   Fiber 服务器、路由、SSR 代理
+│   │       ├── auth/           #   权限等级注册表、cookie 鉴权
+│   │       ├── pagepattern/    #   页面 pattern 校验器
+│   │       ├── ssr/            #   SSR 客户端、pending 注册中心、HookID
+│   │       └── config/         #   环境变量配置加载
+│   └── node/                   # Node SSR Worker
+│       ├── main.ts             #   启动入口
+│       ├── http-transport/     #   HTTP 控制器、渲染执行门
+│       ├── build/              #   SPA/SSR 构建器、页面注册表生成
+│       └── config.ts           #   配置加载
+└── docs/                       # 文档
+```
+
+## 页面注册
+
+页面在 Go 端通过 `hybrid.App` 注册，pattern 必须与 Node 页面路由一致：
+
+```go
+// frame/go/build/pages.go
+func Register(a *hybrid.App) error {
+    a.RegisterRole("guest", nil)
+
+    a.Page("/home", nil, homePage)              // 无需鉴权
+    a.Page("/about", nil, aboutPage)            // 无需鉴权
+    a.Page("/blog/:id", []string{"guest"}, blogPage)  // 需要 guest 角色
+    return nil
+}
+```
+
+**Page handler 签名**：
+
+```go
+func homePage(c *hybrid.PageCtx) error {
+    // c.JSON(data)   — 设置数据，框架根据请求头决定返回 JSON 或 SSR 页面
+    // c.Render()     — 强制 SSR 渲染
+    // c.Param(key)   — 读取路径参数
+    // c.Query(key)   — 读取查询参数
+    // c.NotFound()   — 返回 404
+    return c.JSON(map[string]any{"title": "VenHybird"})
+}
+```
+
+**请求处理流程**：cookie 鉴权 → 权限校验 → handler 设置数据 → `X-Ven-Data-Only: true` 返回 JSON，否则走 SSR 渲染返回 HTML。
+
+## 权限系统
+
+角色支持层级继承，注册时指定父角色：
+
+```go
+a.RegisterRole("admin", []string{"user"})  // admin 继承 user
+a.RegisterRole("user", []string{"guest"})  // user 继承 guest
+```
+
+页面通过角色名数组声明所需权限，框架解析为等级列表后做 `>=` 比较。当前 cookie 鉴权为 stub（统一返回 guest），后续对接真实鉴权。
 
 ## 本地运行
 
-终端一：
+**终端一 — Node SSR Worker**：
 
 ```bash
 cd frame/node
@@ -38,41 +108,29 @@ npm run build
 node dist/main.js
 ```
 
-终端二：
+**终端二 — Go 网关**：
 
 ```bash
 cd frame/go
 go run .
 ```
 
-访问：
+访问 `http://127.0.0.1:8080/home`。
 
-```text
-http://127.0.0.1:8080/home
-```
+## 环境变量
 
-## 页面约定
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `VEN_LISTEN_ADDR` | `:8080` | Go 网关监听地址 |
+| `VEN_NODE_WORKER_URL` | `http://127.0.0.1:3000` | Node SSR Worker 地址 |
+| `VEN_NODE_SUBMIT_TIMEOUT` | `5s` | 任务提交超时 |
+| `VEN_RENDER_TIMEOUT` | `20s` | 渲染总超时（须大于提交超时） |
+| `VEN_INTERNAL_TOKEN` | `development-token` | 内部认证令牌 |
+| `VEN_MAX_PENDING_RENDERS` | `100` | 最大并发渲染数 |
+| `VEN_ASSETS_DIR` | `../node/build` | 静态资源目录 |
 
-```text
-src/home/page.tsx             → /home
-src/blog/[slug]/page.tsx      → /blog/:slug
-src/page.tsx                  → /
-```
+## 文档
 
-## 重要环境变量
-
-```text
-VEN_NODE_WORKER_URL=http://127.0.0.1:3000
-VEN_RENDER_CALLBACK_URL=http://127.0.0.1:8080/_internal/render-callback
-VEN_INTERNAL_TOKEN=development-token
-```
-
-完整协议参见 [Go 与 Node 渲染协议](docs/architecture/go-http-handler.md)。
-
-## 下一阶段
-
-- Go data provider 与首屏 `initialState`；
-- Fiber 业务 API、博客 CRUD、服务端鉴权；
-- 事件驱动 ISR、`DataChange(tags/routes)`、缓存失效和后台再生；
-- 前端 guard manifest；
-- 用博客验证框架落地。
+- [Go 与 Node 渲染协议](docs/architecture/go-http-handler.md)
+- [Node 渲染流程](docs/architecture/node-flow.md)
+- [HTTP Transport API](docs/api/http-transport.md)
