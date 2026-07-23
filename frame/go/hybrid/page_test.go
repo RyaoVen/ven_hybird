@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"ven_hybird/internal/auth"
 	"ven_hybird/internal/config"
 	"ven_hybird/internal/httpserver"
 	"ven_hybird/internal/pagepattern"
@@ -35,7 +36,7 @@ func setupTestApp() (*App, *fakeSSRClient, *ssr.PendingRegistry) {
 	}
 	client := &fakeSSRClient{submitted: make(chan ssr.RenderTask, 1)}
 	pending := ssr.NewPendingRegistry(10)
-	patterns := pagepattern.NewValidator([]string{"/test/:id", "/ssr/:name"})
+	patterns := pagepattern.NewValidator([]string{"/test/:id", "/ssr/:name", "/admin/:id"})
 	server := httpserver.New(cfg, client, pending, fakeHookIDs{}, patterns)
 	return New(server), client, pending
 }
@@ -58,6 +59,53 @@ func TestPage_DataOnly(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if string(body) != `{"id":"42"}` {
 		t.Fatalf("unexpected body: %s", body)
+	}
+}
+
+func TestPage_PublicSkipsCookieAuth(t *testing.T) {
+	// 把 CookieAuth 换成"无 cookie 即失败"的版本，公开页面仍应放行
+	original := auth.CookieAuth
+	auth.CookieAuth = func(ctx *fiber.Ctx) (string, bool) { return "", false }
+	defer func() { auth.CookieAuth = original }()
+
+	app, _, _ := setupTestApp()
+	app.Page("/test/:id", nil, func(c *PageCtx) error {
+		return c.JSON(fiber.Map{"id": c.Param("id")})
+	})
+
+	req := httptest.NewRequest("GET", "/test/42", nil)
+	req.Header.Set("X-Ven-Data-Only", "true")
+	resp, err := app.Server().App().Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200 for public page without cookie, got %d", resp.StatusCode)
+	}
+}
+
+func TestPage_ProtectedRequiresCookieAuth(t *testing.T) {
+	// 同样的失败 CookieAuth，有 role 要求的页面应返回 401
+	original := auth.CookieAuth
+	auth.CookieAuth = func(ctx *fiber.Ctx) (string, bool) { return "", false }
+	defer func() { auth.CookieAuth = original }()
+
+	app, _, _ := setupTestApp()
+	if err := app.RegisterRole("admin", nil); err != nil {
+		t.Fatalf("register role failed: %v", err)
+	}
+	app.Page("/admin/:id", []string{"admin"}, func(c *PageCtx) error {
+		return c.JSON(fiber.Map{"id": c.Param("id")})
+	})
+
+	req := httptest.NewRequest("GET", "/admin/42", nil)
+	req.Header.Set("X-Ven-Data-Only", "true")
+	resp, err := app.Server().App().Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != 401 {
+		t.Fatalf("expected 401 for protected page without cookie, got %d", resp.StatusCode)
 	}
 }
 
