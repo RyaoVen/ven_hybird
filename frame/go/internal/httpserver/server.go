@@ -21,6 +21,7 @@ type Server struct {
 	pending  *ssr.PendingRegistry   // pending 任务注册中心
 	hookIDs  ssr.HookIDGenerator    // HookID 生成器
 	auth     *auth.Registry         // 权限等级注册表
+	sessions *auth.SessionStore     // 会话存储（token → role）
 	patterns *pagepattern.Validator // 页面 pattern 校验器
 }
 
@@ -56,9 +57,13 @@ func New(
 		pending:  pending,
 		hookIDs:  hookIDs,
 		auth:     auth.NewRegistry(),
+		sessions: auth.NewSessionStore(auth.NewMemoryBackend(), sessionTTL),
 		patterns: patterns,
 	}
 }
+
+// sessionTTL 是会话有效期（常量先行，后续再配置化）。
+const sessionTTL = 24 * time.Hour
 
 // ValidatePagePattern 校验页面 pattern 是否合法。
 func (s *Server) ValidatePagePattern(pattern string) error {
@@ -75,9 +80,30 @@ func (s *Server) ResolveRoles(roles []string) ([]int64, error) {
 	return s.auth.Resolve(roles)
 }
 
-// CookieAuth 从请求 cookie 中解析用户角色（当前为 stub）。
+// GrantAuth 放行函数：为已注册的角色生成会话令牌并下发鉴权 cookie。
+// 业务层在用户校验（登录）通过后调用；未注册的角色拒绝放行。
+func (s *Server) GrantAuth(ctx *fiber.Ctx, role string) error {
+	if _, err := s.auth.Resolve([]string{role}); err != nil {
+		return err
+	}
+	token, err := s.sessions.Grant(role)
+	if err != nil {
+		return err
+	}
+	auth.SetAuthCookies(ctx, token, role, s.sessions.TTL())
+	return nil
+}
+
+// RevokeAuth 注销当前请求的会话并清除鉴权 cookie（登出）。
+func (s *Server) RevokeAuth(ctx *fiber.Ctx) {
+	s.sessions.Revoke(ctx.Cookies(auth.AuthCookieName))
+	auth.ClearAuthCookies(ctx)
+}
+
+// CookieAuth 从请求的 ven_auth cookie 中解析用户角色：
+// 拿令牌到会话缓存里比对，不存在或已过期返回 false。
 func (s *Server) CookieAuth(ctx *fiber.Ctx) (role string, ok bool) {
-	return auth.CookieAuth(ctx)
+	return s.sessions.Role(ctx.Cookies(auth.AuthCookieName))
 }
 
 // CheckAuth 检查用户角色是否满足页面所需的任意等级。
