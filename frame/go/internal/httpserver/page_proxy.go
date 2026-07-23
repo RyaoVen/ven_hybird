@@ -14,8 +14,13 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-// HandlePage 处理页面渲染请求，提交任务给 Node.js 并等待回调结果。
+// HandlePage 处理兜底页面渲染请求，以空 InitialState 提交 SSR。
 func (s *Server) HandlePage(ctx *fiber.Ctx) error {
+	return s.RenderPage(ctx, map[string]any{})
+}
+
+// RenderPage 以 data 作为 InitialState 提交 SSR 渲染任务，并等待回调结果。
+func (s *Server) RenderPage(ctx *fiber.Ctx, data any) error {
 	// 步骤 1: 生成唯一的 HookID
 	hookID, err := s.hookIDs.New()
 	if err != nil {
@@ -36,7 +41,7 @@ func (s *Server) HandlePage(ctx *fiber.Ctx) error {
 		Route:        requestRoute,
 		Params:       map[string]string{},
 		Query:        ctx.Queries(),
-		InitialState: map[string]any{},
+		InitialState: data,
 	}
 	task := ssr.RenderTask{
 		HookID:       hookID,

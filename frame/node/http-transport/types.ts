@@ -34,3 +34,8 @@ export interface RenderCallback {
     error?: RenderError;        /** 错误信息，成功时为 undefined */
     duration?: number;          /** 渲染耗时（毫秒） */
 }
+
+/** 页面路由模式列表，通过 GET /pages 返回给外部服务（nodePagesPattern） */
+export interface PagePatternList {
+    patterns: string[];         /** 全部页面路由模板，如 /blog/:slug */
+}

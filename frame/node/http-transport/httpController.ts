@@ -4,10 +4,13 @@
  */
 import { HttpClient, HttpHandler, HttpServer, HttpServerOptions } from "./httpClient";
 import { RenderExecutionGate } from "./renderExecutionGate";
-import { RenderCallback, RenderError, RenderTask } from "./types";
+import { PagePatternList, RenderCallback, RenderError, RenderTask } from "./types";
 
 /** 渲染任务接收路由 */
 const renderRoute = "/render";
+
+/** 页面路由模式列表查询路由（nodePagesPattern） */
+const pagesRoute = "/pages";
 
 /** HTTP 控制器配置 */
 export interface HttpControllerOptions {
@@ -25,6 +28,9 @@ export type RenderHandler = (task: RenderTask) => Promise<{
     matchedRoute: string;
     pageName: string;
 }>;
+
+/** 页面路由模式提供函数，返回全部页面路由模板（nodePagesPattern） */
+export type PagePatternProvider = () => string[];
 
 /**
  * HTTP 渲染控制器
@@ -47,14 +53,26 @@ export class HttpController {
 
     /**
      * 注册路由并启动 HTTP 服务器
-     * @description GET /health 健康检查；POST /render 接收渲染任务（异步执行，立即返回 202）
+     * @description GET /health 健康检查；POST /render 接收渲染任务（异步执行，立即返回 202）；
+     * 传入 pagePatterns 时额外注册 GET /pages 返回全部页面路由模式
      * @param renderHandler - 渲染处理函数
+     * @param pagePatterns - 页面路由模式提供函数（可选）
      */
-    async requestDeal(renderHandler: RenderHandler): Promise<void> {
+    async requestDeal(renderHandler: RenderHandler, pagePatterns?: PagePatternProvider): Promise<void> {
         this.httpHandler.get("/health", () => ({
             status: "ok",
             activeRenders: this.gate.size(),
         }));
+
+        if (pagePatterns) {
+            this.httpHandler.get(pagesRoute, (ctx) => {
+                if (!this.isInternalRequest(ctx.headers)) {
+                    return { status: 401, data: { error: "Invalid internal token" } };
+                }
+                const data: PagePatternList = { patterns: pagePatterns() };
+                return { status: 200, data };
+            });
+        }
 
         this.httpHandler.post(renderRoute, async (ctx) => {
             if (!this.isInternalRequest(ctx.headers)) {

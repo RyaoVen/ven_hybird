@@ -28,12 +28,16 @@ async function main(): Promise<void> {
         maxConcurrentRenders: WorkerConfig.maxConcurrentRenders,
     });
 
-    await controller.requestDeal(async (task: RenderTask) => {
-        return pageBuild.render(task.requestRoute, task.payload);
-    });
+    await controller.requestDeal(
+        async (task: RenderTask) => {
+            return pageBuild.render(task.requestRoute, task.payload);
+        },
+        () => pageBuild.getRouter().getPages().map((page) => page.route),
+    );
 
     console.log("页面路由:", pageBuild.getRouter().getPages().map((page) => page.route));
     console.log("任务入口: POST /render");
+    console.log("页面模式: GET /pages");
     console.log(`回调地址: ${WorkerConfig.callbackURL}`);
     console.log(`HTTP 服务已启动: http://${HttpServerConfig.host}:${HttpServerConfig.port}`);
 }

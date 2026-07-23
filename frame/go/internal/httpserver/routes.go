@@ -3,8 +3,10 @@ package httpserver
 
 import "github.com/gofiber/fiber/v2"
 
-// RegisterRoutes 注册所有 HTTP 路由。
-func (s *Server) RegisterRoutes() {
+// RegisterInternalRoutes 注册内部与系统路由。
+// 注意：fiber 按注册顺序匹配路由，本方法不含页面兜底，
+// 业务页面注册完后再调用 RegisterPageFallback。
+func (s *Server) RegisterInternalRoutes() {
 	// 内部渲染回调端点：Node.js 工作节点完成渲染后通过此端点回传结果
 	s.app.Post("/_internal/render-callback", s.HandleRenderCallback)
 
@@ -29,9 +31,12 @@ func (s *Server) RegisterRoutes() {
 	auth.All("/*", func(ctx *fiber.Ctx) error {
 		return ctx.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "auth route not found"})
 	})
+}
 
-	// 通用页面渲染路由（兜底）：匹配所有未被上述路由处理的 GET/HEAD 请求
-	// 交由 HandlePage 处理器执行 SSR 渲染流程
+// RegisterPageFallback 注册通用页面渲染路由（兜底），
+// 匹配所有未被已注册路由处理的 GET/HEAD 请求，交由 HandlePage 执行 SSR。
+// 必须在所有具体页面路由注册之后调用，否则会抢先匹配。
+func (s *Server) RegisterPageFallback() {
 	s.app.Get("/*", s.HandlePage)
 	s.app.Head("/*", s.HandlePage)
 }

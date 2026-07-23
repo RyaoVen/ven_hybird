@@ -1,0 +1,47 @@
+// Package build 业务层：角色与页面的注册入口，以及各页面的业务 handler。
+package build
+
+import (
+	"ven_hybird/hybrid"
+)
+
+// Register 注册业务角色与页面。
+// pattern 必须与 Node 页面路由权威列表（nodePagesPattern）一致，否则启动即失败。
+func Register(a *hybrid.App) error {
+	// CookieAuth 目前为 stub，统一返回 guest；先注册 guest 角色让鉴权链路可通
+	if err := a.RegisterRole("guest", nil); err != nil {
+		return err
+	}
+
+	a.Page("/home", nil, homePage)
+	a.Page("/about", nil, aboutPage)
+	a.Page("/blog/:id", []string{"guest"}, blogPage)
+	return nil
+}
+
+// homePage 首页，返回欢迎数据。
+func homePage(c *hybrid.PageCtx) error {
+	return c.JSON(map[string]any{
+		"title":   "VenHybird",
+		"message": "hello from go",
+	})
+}
+
+// aboutPage 关于页，返回固定数据。
+func aboutPage(c *hybrid.PageCtx) error {
+	return c.JSON(map[string]any{
+		"page": "about",
+	})
+}
+
+// blogPage 博客详情页，读取路径参数并返回文章数据。
+func blogPage(c *hybrid.PageCtx) error {
+	id := c.Param("id")
+	if id == "" {
+		return c.NotFound()
+	}
+	return c.JSON(map[string]any{
+		"id":    id,
+		"title": "blog post " + id,
+	})
+}
