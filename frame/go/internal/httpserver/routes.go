@@ -24,13 +24,6 @@ func (s *Server) RegisterInternalRoutes() {
 	api.All("/*", func(ctx *fiber.Ctx) error {
 		return ctx.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "api route not found"})
 	})
-
-	// 认证路由组：当前为占位实现，所有 /auth/* 请求返回 404
-	// 预留给后续的认证功能扩展
-	auth := s.app.Group("/auth")
-	auth.All("/*", func(ctx *fiber.Ctx) error {
-		return ctx.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "auth route not found"})
-	})
 }
 
 // RegisterPageFallback 注册通用页面渲染路由（兜底），

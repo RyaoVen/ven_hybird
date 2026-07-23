@@ -95,7 +95,14 @@ a.RegisterRole("admin", []string{"user"})  // admin 继承 user
 a.RegisterRole("user", []string{"guest"})  // user 继承 guest
 ```
 
-页面通过角色名数组声明所需权限，框架解析为等级列表后做 `>=` 比较。当前 cookie 鉴权为 stub（统一返回 guest），后续对接真实鉴权。
+页面通过角色名数组声明所需权限，框架解析为等级列表后做命中比较。
+
+**cookie 鉴权**：登录校验通过后调用放行函数 `Server.GrantAuth(ctx, role)`，生成随机会话令牌存入服务端会话缓存（`token → role`），并下发两个 cookie：
+
+- `ven_auth`（HttpOnly）：会话令牌，后端鉴权唯一依据，每次请求拿它到会话缓存比对；
+- `ven_role`（JS 可读）：角色名明文，供前端路由守卫使用（守卫注入待后续实现）。
+
+会话存储后端是 `auth.Backend` KV 接口（`Set/Get/Delete`），当前为内存实现（24h 过期），预留 Redis 等外部存储切换空间。登出调用 `Server.RevokeAuth(ctx)` 注销会话并清除 cookie。
 
 ## 本地运行
 

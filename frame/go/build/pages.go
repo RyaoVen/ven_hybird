@@ -8,10 +8,12 @@ import (
 // Register 注册业务角色与页面。
 // pattern 必须与 Node 页面路由权威列表（nodePagesPattern）一致，否则启动即失败。
 func Register(a *hybrid.App) error {
-	// CookieAuth 目前为 stub，统一返回 guest；先注册 guest 角色让鉴权链路可通
+	// CookieAuth 实装后按会话缓存鉴权；先注册 guest 角色让 demo 登录可放行
 	if err := a.RegisterRole("guest", nil); err != nil {
 		return err
 	}
+
+	registerAuthRoutes(a)
 
 	a.Page("/home", nil, homePage)
 	a.Page("/about", nil, aboutPage)
