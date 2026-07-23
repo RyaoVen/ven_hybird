@@ -2,18 +2,17 @@ package hybrid
 
 import "github.com/gofiber/fiber/v2"
 
-// PageCtx 是页面处理器的请求上下文。
+// PageCtx 是页面处理器的请求上下文，对 fiber.Ctx 的封装截流。
 // 它截流 handler 设置的 JSON 数据，由 Page 注册层统一决定返回 JSON 还是 SSR 页面。
 type PageCtx struct {
 	ctx       *fiber.Ctx
-	app       *App
 	data      any
 	render    bool
 	responded bool
 }
 
-func newPageCtx(ctx *fiber.Ctx, app *App) *PageCtx {
-	return &PageCtx{ctx: ctx, app: app}
+func newPageCtx(ctx *fiber.Ctx) *PageCtx {
+	return &PageCtx{ctx: ctx}
 }
 
 // Param 读取路径参数，如 /blog/:slug 中的 slug。
