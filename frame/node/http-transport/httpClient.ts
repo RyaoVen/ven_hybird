@@ -294,9 +294,12 @@ export class HttpClient {
             let data: unknown;
             const responseType = finalConfig.responseType ?? "json";
             switch (responseType) {
-                case "json":
-                    data = await response.json();
+                case "json": {
+                    // 204/空 body 不做 JSON 解析，避免 "Unexpected end of JSON input"
+                    const text = await response.text();
+                    data = text.length === 0 ? undefined : JSON.parse(text);
                     break;
+                }
                 case "text":
                     data = await response.text();
                     break;
@@ -306,8 +309,10 @@ export class HttpClient {
                 case "blob":
                     data = await response.blob();
                     break;
-                default:
-                    data = await response.json();
+                default: {
+                    const text = await response.text();
+                    data = text.length === 0 ? undefined : JSON.parse(text);
+                }
             }
 
             let httpResponse: HttpResponse<T> = {
