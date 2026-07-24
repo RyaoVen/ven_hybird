@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"ven_hybird/internal/pagecache"
 	"ven_hybird/internal/ssr"
 
 	"github.com/gofiber/fiber/v2"
@@ -19,19 +20,65 @@ func (s *Server) HandlePage(ctx *fiber.Ctx) error {
 	return s.RenderPage(ctx, map[string]any{})
 }
 
-// RenderPage 以 data 作为 InitialState 提交 SSR 渲染任务，并等待回调结果。
+// RenderPage 渲染页面并写回响应：
+// 先查页面缓存，命中直接返回 HTML（不回源 Node）；
+// 未命中防击穿回源，成功后回填缓存。404/502/504 等失败结果不缓存。
 func (s *Server) RenderPage(ctx *fiber.Ctx, data any) error {
+	key, keyErr := pagecache.Key(ctx.Path(), ctx.Queries(), data)
+	if keyErr == nil {
+		if entry, ok := s.pageCache.Get(key); ok {
+			ctx.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
+			return ctx.SendString(entry.HTML)
+		}
+	}
+
+	render := func() (*pagecache.Entry, error) { return s.render(ctx, data) }
+	var entry *pagecache.Entry
+	var err error
+	if keyErr == nil {
+		entry, err = s.pageCache.Do(key, render)
+	} else {
+		// data 无法序列化：跳过缓存直接回源
+		entry, err = render()
+	}
+	if err != nil {
+		var renderErr *renderError
+		if errors.As(err, &renderErr) {
+			if renderErr.json {
+				return ctx.Status(renderErr.status).JSON(fiber.Map{"error": renderErr.message})
+			}
+			return ctx.Status(renderErr.status).SendString(renderErr.message)
+		}
+		return err
+	}
+
+	ctx.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
+	return ctx.SendString(entry.HTML)
+}
+
+// renderError 携带 HTTP 状态码与响应格式的回源失败，用于共享给 flight follower。
+type renderError struct {
+	status  int
+	message string
+	json    bool // true 用 JSON 响应，false 用纯文本
+}
+
+func (e *renderError) Error() string { return e.message }
+
+// render 回源渲染：提交 SSR 任务给 Node.js 并等待回调结果，
+// 成功返回可缓存的 Entry，失败返回 renderError（不缓存）。
+func (s *Server) render(ctx *fiber.Ctx, data any) (*pagecache.Entry, error) {
 	// 步骤 1: 生成唯一的 HookID
 	hookID, err := s.hookIDs.New()
 	if err != nil {
-		return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "create render request failed"})
+		return nil, &renderError{fiber.StatusInternalServerError, "create render request failed", true}
 	}
 
 	// 步骤 2: 在 PendingRegistry 中注册等待通道
 	// remove 函数用于在请求结束时清理注册，防止内存泄漏
 	waiter, remove, err := s.pending.Register(hookID)
 	if err != nil {
-		return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
+		return nil, &renderError{fiber.StatusServiceUnavailable, err.Error(), true}
 	}
 	defer remove()
 
@@ -56,9 +103,9 @@ func (s *Server) RenderPage(ctx *fiber.Ctx, data any) error {
 	cancelSubmit()
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			return ctx.Status(fiber.StatusGatewayTimeout).JSON(fiber.Map{"error": "render worker submit timed out"})
+			return nil, &renderError{fiber.StatusGatewayTimeout, "render worker submit timed out", true}
 		}
-		return ctx.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "render worker rejected request"})
+		return nil, &renderError{fiber.StatusBadGateway, "render worker rejected request", true}
 	}
 
 	// 步骤 5: 等待渲染结果回调或超时
@@ -69,16 +116,21 @@ func (s *Server) RenderPage(ctx *fiber.Ctx, data any) error {
 		if callback.Error != nil {
 			// 渲染失败：根据错误码返回不同的 HTTP 状态
 			if callback.Error.Code == "PAGE_NOT_FOUND" {
-				return ctx.Status(fiber.StatusNotFound).SendString(callback.Error.Message)
+				return nil, &renderError{fiber.StatusNotFound, callback.Error.Message, false}
 			}
-			return ctx.Status(fiber.StatusBadGateway).SendString(callback.Error.Message)
+			return nil, &renderError{fiber.StatusBadGateway, callback.Error.Message, false}
 		}
-		// 渲染成功：返回 HTML 内容
-		ctx.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
-		return ctx.SendString(callback.HTML)
+		// 渲染成功：返回可缓存的渲染结果
+		return &pagecache.Entry{
+			HTML:         callback.HTML,
+			MatchedRoute: callback.MatchedRoute,
+			PageName:     callback.PageName,
+			RenderedAt:   time.Now(),
+			Duration:     callback.Duration,
+		}, nil
 	case <-time.After(s.config.RenderTimeout):
 		// 渲染超时
-		return ctx.Status(fiber.StatusGatewayTimeout).JSON(fiber.Map{"error": "render worker timed out"})
+		return nil, &renderError{fiber.StatusGatewayTimeout, "render worker timed out", true}
 	}
 }
 

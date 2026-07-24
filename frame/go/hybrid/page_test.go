@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -208,4 +209,168 @@ func TestPage_SSR(t *testing.T) {
 	if string(body) != "<html>hello</html>" {
 		t.Fatalf("unexpected body: %s", body)
 	}
+}
+
+// resolveTasks 持续消费提交任务并按 HTML/错误回调，返回停止函数。
+func resolveTasks(client *fakeSSRClient, pending *ssr.PendingRegistry, html string, renderErr *ssr.RenderError) func() {
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case task := <-client.submitted:
+				pending.Resolve(ssr.RenderCallback{
+					HookID:       task.HookID,
+					RequestRoute: task.RequestRoute,
+					HTML:         html,
+					Error:        renderErr,
+				})
+			case <-stop:
+				return
+			}
+		}
+	}()
+	return func() { close(stop) }
+}
+
+// expectNoTask 断言在窗口期内没有新的渲染任务提交。
+func expectNoTask(t *testing.T, client *fakeSSRClient, window time.Duration) {
+	t.Helper()
+	select {
+	case task := <-client.submitted:
+		t.Fatalf("unexpected render task submitted: %+v", task)
+	case <-time.After(window):
+	}
+}
+
+func TestPage_CacheHit(t *testing.T) {
+	app, client, pending, _ := setupTestApp()
+	app.Page("/ssr/:name", nil, func(c *PageCtx) error {
+		return c.JSON(fiber.Map{"name": c.Param("name")})
+	})
+	stop := resolveTasks(client, pending, "<html>cached</html>", nil)
+	defer stop()
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest("GET", "/ssr/world", nil)
+		resp, err := app.Server().App().Test(req)
+		if err != nil {
+			t.Fatalf("request %d failed: %v", i, err)
+		}
+		if resp.StatusCode != 200 {
+			t.Fatalf("request %d expected 200, got %d", i, resp.StatusCode)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		if string(body) != "<html>cached</html>" {
+			t.Fatalf("request %d unexpected body: %s", i, body)
+		}
+	}
+	// 第二次请求应命中缓存，不再回源
+	expectNoTask(t, client, 200*time.Millisecond)
+}
+
+func TestPage_CacheDataVariation(t *testing.T) {
+	app, client, pending, _ := setupTestApp()
+	// data 随 query 变化 → 不同 key → 每次都回源
+	app.Page("/ssr/:name", nil, func(c *PageCtx) error {
+		return c.JSON(fiber.Map{"q": c.Query("q")})
+	})
+	stop := resolveTasks(client, pending, "<html>ok</html>", nil)
+	defer stop()
+
+	for _, q := range []string{"a", "b"} {
+		req := httptest.NewRequest("GET", "/ssr/world?q="+q, nil)
+		resp, err := app.Server().App().Test(req)
+		if err != nil {
+			t.Fatalf("request q=%s failed: %v", q, err)
+		}
+		if resp.StatusCode != 200 {
+			t.Fatalf("request q=%s expected 200, got %d", q, resp.StatusCode)
+		}
+	}
+	// 两个不同 data 的请求各回源一次；第三个与 q=a 相同 key 的请求应命中缓存
+	req := httptest.NewRequest("GET", "/ssr/world?q=a", nil)
+	if _, err := app.Server().App().Test(req); err != nil {
+		t.Fatalf("repeat request failed: %v", err)
+	}
+	expectNoTask(t, client, 200*time.Millisecond)
+}
+
+func TestPage_CacheSkips404(t *testing.T) {
+	app, client, pending, _ := setupTestApp()
+	app.Page("/ssr/:name", nil, func(c *PageCtx) error {
+		return c.JSON(fiber.Map{"name": c.Param("name")})
+	})
+	stop := resolveTasks(client, pending, "", &ssr.RenderError{Code: "PAGE_NOT_FOUND", Message: "not found"})
+	defer stop()
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest("GET", "/ssr/world", nil)
+		resp, err := app.Server().App().Test(req)
+		if err != nil {
+			t.Fatalf("request %d failed: %v", i, err)
+		}
+		if resp.StatusCode != 404 {
+			t.Fatalf("request %d expected 404, got %d", i, resp.StatusCode)
+		}
+	}
+	// 404 不缓存：两次请求都应回源；resolveTasks 已消费两个任务，此处断言没有第三个
+	expectNoTask(t, client, 200*time.Millisecond)
+}
+
+func TestPage_InvalidatePage(t *testing.T) {
+	app, client, pending, _ := setupTestApp()
+	app.Page("/ssr/:name", nil, func(c *PageCtx) error {
+		return c.JSON(fiber.Map{"name": c.Param("name")})
+	})
+	stop := resolveTasks(client, pending, "<html>v1</html>", nil)
+	defer stop()
+
+	get := func() string {
+		req := httptest.NewRequest("GET", "/ssr/world", nil)
+		resp, err := app.Server().App().Test(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return string(body)
+	}
+
+	get() // 回源并回填
+	app.InvalidatePage("/ssr/world")
+	get() // 失效后应重新回源（resolveTasks 再消费一个任务）
+	expectNoTask(t, client, 200*time.Millisecond)
+}
+
+func TestPage_CacheSingleFlight(t *testing.T) {
+	app, client, pending, _ := setupTestApp()
+	app.Page("/ssr/:name", nil, func(c *PageCtx) error {
+		return c.JSON(fiber.Map{"name": c.Param("name")})
+	})
+	stop := resolveTasks(client, pending, "<html>flight</html>", nil)
+	defer stop()
+
+	const n = 5
+	var wg sync.WaitGroup
+	statuses := make([]int, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			req := httptest.NewRequest("GET", "/ssr/world", nil)
+			resp, err := app.Server().App().Test(req)
+			if err != nil {
+				t.Errorf("request %d failed: %v", i, err)
+				return
+			}
+			statuses[i] = resp.StatusCode
+		}(i)
+	}
+	wg.Wait()
+	for i, status := range statuses {
+		if status != 200 {
+			t.Fatalf("request %d expected 200, got %d", i, status)
+		}
+	}
+	// 并发同 key 请求只回源一次
+	expectNoTask(t, client, 200*time.Millisecond)
 }
