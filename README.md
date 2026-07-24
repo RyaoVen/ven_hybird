@@ -23,7 +23,9 @@ Node SSR Worker :3000  ─── 仅内部访问
   └─ src/**/page.tsx     页面路由（唯一真相源）
 ```
 
-**核心流程**：Go 启动时从 Node 拉取页面路由模式列表 → 注册业务页面路由 → 请求到达时 cookie 鉴权 → 权限校验 → 执行 handler 拿到数据 → 提交 SSR 渲染 → 返回 HTML 或 JSON。
+**核心流程**：Go 启动时从 Node 拉取页面路由模式列表 → 注册业务页面路由 → 请求到达时 cookie 鉴权 → 权限校验 → 执行 handler 拿到数据 → 查页面缓存（命中直接返回 HTML，不回 Node）→ 提交 SSR 渲染并回填缓存 → 返回 HTML 或 JSON。
+
+**页面缓存**：SSR HTML 在 Go 端按 `路径 + 规范化 query + 数据指纹` 缓存（内存实现，1 分钟 TTL，上限 1000 条），相同请求并发时防击穿只回源一次。仅缓存成功渲染（404/502/504 不缓存）。业务数据变更后调 `app.InvalidatePage(path)` 手动失效；存储后端是 `pagecache.Backend` 接口，预留 Redis 切换。
 
 ## 目录结构
 

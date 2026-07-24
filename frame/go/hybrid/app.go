@@ -29,3 +29,8 @@ func (a *App) Server() *httpserver.Server {
 func (a *App) RegisterRole(role string, parents []string) error {
 	return a.server.RegisterRole(role, parents)
 }
+
+// InvalidatePage 使指定路径的页面缓存失效（业务数据变更后手动调用）。
+func (a *App) InvalidatePage(path string) {
+	a.server.InvalidatePage(path)
+}
