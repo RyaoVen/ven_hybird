@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"log"
 	"strings"
 	"time"
 
@@ -23,10 +24,12 @@ func (s *Server) HandlePage(ctx *fiber.Ctx) error {
 // RenderPage 渲染页面并写回响应：
 // 先查页面缓存，命中直接返回 HTML（不回源 Node）；
 // 未命中防击穿回源，成功后回填缓存。404/502/504 等失败结果不缓存。
+// 渲染事件（缓存 hit/miss/shared、Node 耗时）写日志。
 func (s *Server) RenderPage(ctx *fiber.Ctx, data any) error {
 	key, keyErr := pagecache.Key(ctx.Path(), ctx.Queries(), data)
 	if keyErr == nil {
 		if entry, ok := s.pageCache.Get(key); ok {
+			log.Printf("render: hit %s %s", ctx.Method(), ctx.Path())
 			ctx.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
 			return ctx.SendString(entry.HTML)
 		}
@@ -34,11 +37,13 @@ func (s *Server) RenderPage(ctx *fiber.Ctx, data any) error {
 
 	render := func() (*pagecache.Entry, error) { return s.render(ctx, data) }
 	var entry *pagecache.Entry
+	var shared bool
 	var err error
 	if keyErr == nil {
-		entry, err = s.pageCache.Do(key, render)
+		entry, shared, err = s.pageCache.Do(key, render)
 	} else {
 		// data 无法序列化：跳过缓存直接回源
+		log.Printf("render: nocache %s %s (cache key: %v)", ctx.Method(), ctx.Path(), keyErr)
 		entry, err = render()
 	}
 	if err != nil {
@@ -52,6 +57,13 @@ func (s *Server) RenderPage(ctx *fiber.Ctx, data any) error {
 		return err
 	}
 
+	if keyErr == nil {
+		if shared {
+			log.Printf("render: shared %s %s", ctx.Method(), ctx.Path())
+		} else {
+			log.Printf("render: miss %s %s node=%dms", ctx.Method(), ctx.Path(), entry.Duration)
+		}
+	}
 	ctx.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
 	return ctx.SendString(entry.HTML)
 }
