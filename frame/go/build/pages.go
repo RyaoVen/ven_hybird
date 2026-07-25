@@ -15,9 +15,16 @@ func Register(a *hybrid.App) error {
 
 	registerAuthRoutes(a)
 
+	a.Page("/login", nil, emptyPage)
+	a.Page("/403", nil, emptyPage)
 	a.Page("/home", nil, homePage)
 	a.Page("/about", nil, aboutPage)
 	a.Page("/blog/:id", []string{"guest"}, blogPage)
+	return nil
+}
+
+// emptyPage 无业务数据的页面（登录页、错误页等）。
+func emptyPage(c *hybrid.PageCtx) error {
 	return nil
 }
 

@@ -30,7 +30,9 @@ export const SSRBuildConfig: SSRBuildOptions = {
     entryPoint: "../../src/entry-server.tsx",
     minify: true,
     sourcemap: "external",
-    external: [],
+    // react/react-dom 不打入 bundle，运行时从 node_modules 加载，
+    // 与 ssrRenderer 的 renderToString 保持同一份 React（否则 hooks 报 Invalid hook call）
+    external: ["react", "react-dom"],
     format: "cjs",
     write: true,
     outFile: "./build/entry-server.js",
