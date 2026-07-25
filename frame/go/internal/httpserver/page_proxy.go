@@ -21,21 +21,32 @@ func (s *Server) HandlePage(ctx *fiber.Ctx) error {
 	return s.RenderPage(ctx, map[string]any{})
 }
 
-// RenderPage 渲染页面并写回响应：
-// 先查页面缓存，命中直接返回 HTML（不回源 Node）；
+// RenderPage 渲染当前路径对应的页面并写回响应：先查页面缓存，命中直接返回 HTML（不回源 Node）；
 // 未命中防击穿回源，成功后回填缓存。404/502/504 等失败结果不缓存。
 // 渲染事件（缓存 hit/miss/shared、Node 耗时）写日志。
 func (s *Server) RenderPage(ctx *fiber.Ctx, data any) error {
-	key, keyErr := pagecache.Key(ctx.Path(), ctx.Queries(), data)
+	return s.renderPage(ctx, ctx.Path(), data)
+}
+
+// RenderPageAs 以指定路由渲染页面并在当前 URL 写回（用于 /403 等错误页原地渲染）。
+// 缓存 key 使用指定路由（错误页被正确缓存，不污染当前路径的缓存）；
+// 响应状态码由调用方提前通过 ctx.Status 设置。
+func (s *Server) RenderPageAs(ctx *fiber.Ctx, route string, data any) error {
+	return s.renderPage(ctx, route, data)
+}
+
+// renderPage 是 RenderPage/RenderPageAs 的共用实现：route 参与缓存 key 与页面匹配。
+func (s *Server) renderPage(ctx *fiber.Ctx, route string, data any) error {
+	key, keyErr := pagecache.Key(route, ctx.Queries(), data)
 	if keyErr == nil {
 		if entry, ok := s.pageCache.Get(key); ok {
-			log.Printf("render: hit %s %s", ctx.Method(), ctx.Path())
+			log.Printf("render: hit %s %s", ctx.Method(), route)
 			ctx.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
 			return ctx.SendString(entry.HTML)
 		}
 	}
 
-	render := func() (*pagecache.Entry, error) { return s.render(ctx, data) }
+	render := func() (*pagecache.Entry, error) { return s.render(ctx, route, data) }
 	var entry *pagecache.Entry
 	var shared bool
 	var err error
@@ -43,7 +54,7 @@ func (s *Server) RenderPage(ctx *fiber.Ctx, data any) error {
 		entry, shared, err = s.pageCache.Do(key, render)
 	} else {
 		// data 无法序列化：跳过缓存直接回源
-		log.Printf("render: nocache %s %s (cache key: %v)", ctx.Method(), ctx.Path(), keyErr)
+		log.Printf("render: nocache %s %s (cache key: %v)", ctx.Method(), route, keyErr)
 		entry, err = render()
 	}
 	if err != nil {
@@ -59,9 +70,9 @@ func (s *Server) RenderPage(ctx *fiber.Ctx, data any) error {
 
 	if keyErr == nil {
 		if shared {
-			log.Printf("render: shared %s %s", ctx.Method(), ctx.Path())
+			log.Printf("render: shared %s %s", ctx.Method(), route)
 		} else {
-			log.Printf("render: miss %s %s node=%dms", ctx.Method(), ctx.Path(), entry.Duration)
+			log.Printf("render: miss %s %s node=%dms", ctx.Method(), route, entry.Duration)
 		}
 	}
 	ctx.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
@@ -79,7 +90,8 @@ func (e *renderError) Error() string { return e.message }
 
 // render 回源渲染：提交 SSR 任务给 Node.js 并等待回调结果，
 // 成功返回可缓存的 Entry，失败返回 renderError（不缓存）。
-func (s *Server) render(ctx *fiber.Ctx, data any) (*pagecache.Entry, error) {
+// route 为页面匹配路由（兜底/常规渲染为请求路径，错误页渲染为错误页路由）。
+func (s *Server) render(ctx *fiber.Ctx, route string, data any) (*pagecache.Entry, error) {
 	// 步骤 1: 生成唯一的 HookID
 	hookID, err := s.hookIDs.New()
 	if err != nil {
@@ -95,16 +107,15 @@ func (s *Server) render(ctx *fiber.Ctx, data any) (*pagecache.Entry, error) {
 	defer remove()
 
 	// 步骤 3: 构造页面启动数据和渲染任务
-	requestRoute := ctx.Path()
 	bootstrap := ssr.PageBootstrap{
-		Route:        requestRoute,
+		Route:        route,
 		Params:       map[string]string{},
 		Query:        ctx.Queries(),
 		InitialState: data,
 	}
 	task := ssr.RenderTask{
 		HookID:       hookID,
-		RequestRoute: requestRoute,
+		RequestRoute: route,
 		Payload:      bootstrap,
 	}
 

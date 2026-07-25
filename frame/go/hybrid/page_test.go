@@ -374,3 +374,139 @@ func TestPage_CacheSingleFlight(t *testing.T) {
 	// 并发同 key 请求只回源一次
 	expectNoTask(t, client, 200*time.Millisecond)
 }
+
+// setupGuardTestApp 注册 admin/guest 角色与受保护页面，并提供 guest 登录端点。
+func setupGuardTestApp(t *testing.T) (*App, *fakeSSRClient, *ssr.PendingRegistry, *httpserver.Server) {
+	t.Helper()
+	app, client, pending, server := setupTestApp()
+	if err := app.RegisterRole("guest", nil); err != nil {
+		t.Fatalf("register guest failed: %v", err)
+	}
+	if err := app.RegisterRole("admin", nil); err != nil {
+		t.Fatalf("register admin failed: %v", err)
+	}
+	app.Page("/admin/:id", []string{"admin"}, func(c *PageCtx) error {
+		return c.JSON(fiber.Map{"id": c.Param("id")})
+	})
+	server.App().Post("/test-login-guest", func(ctx *fiber.Ctx) error {
+		return server.GrantAuth(ctx, "guest")
+	})
+	return app, client, pending, server
+}
+
+// loginAs 通过测试登录端点获取 ven_auth cookie。
+func loginAs(t *testing.T, app *App, loginPath string) *http.Cookie {
+	t.Helper()
+	resp, err := app.Server().App().Test(httptest.NewRequest("POST", loginPath, nil))
+	if err != nil {
+		t.Fatalf("login failed: %v", err)
+	}
+	for _, cookie := range resp.Cookies() {
+		if cookie.Name == auth.AuthCookieName {
+			return cookie
+		}
+	}
+	t.Fatal("no ven_auth cookie from login")
+	return nil
+}
+
+func TestPage_UnauthenticatedRedirect(t *testing.T) {
+	app, _, _, _ := setupGuardTestApp(t)
+
+	req := httptest.NewRequest("GET", "/admin/42?tab=a", nil)
+	resp, err := app.Server().App().Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != 302 {
+		t.Fatalf("expected 302, got %d", resp.StatusCode)
+	}
+	location := resp.Header.Get("Location")
+	if !strings.HasPrefix(location, "/login?next=") {
+		t.Fatalf("expected redirect to /login, got %q", location)
+	}
+	if !strings.Contains(location, "next=%2Fadmin%2F42%3Ftab%3Da") {
+		t.Fatalf("expected next to contain escaped original url, got %q", location)
+	}
+}
+
+func TestPage_UnauthenticatedRedirectCustomPath(t *testing.T) {
+	app, _, _, _ := setupGuardTestApp(t)
+	app.SetLoginRedirect("/auth/signin")
+
+	req := httptest.NewRequest("GET", "/admin/42", nil)
+	resp, err := app.Server().App().Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	location := resp.Header.Get("Location")
+	if !strings.HasPrefix(location, "/auth/signin?next=") {
+		t.Fatalf("expected redirect to custom path, got %q", location)
+	}
+}
+
+func TestPage_ForbiddenRenders403Page(t *testing.T) {
+	app, client, pending, _ := setupGuardTestApp(t)
+	cookie := loginAs(t, app, "/test-login-guest")
+
+	stop := resolveTasks(client, pending, "<html>forbidden</html>", nil)
+	defer stop()
+
+	req := httptest.NewRequest("GET", "/admin/42", nil)
+	req.AddCookie(cookie)
+	resp, err := app.Server().App().Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != 403 {
+		t.Fatalf("expected 403, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "<html>forbidden</html>" {
+		t.Fatalf("expected 403 page html, got %s", body)
+	}
+}
+
+func TestPage_ForbiddenRenderRoute(t *testing.T) {
+	app, client, pending, _ := setupGuardTestApp(t)
+	cookie := loginAs(t, app, "/test-login-guest")
+
+	go func() {
+		task := <-client.submitted
+		if task.Payload.Route != "/403" {
+			t.Errorf("expected render route /403, got %q", task.Payload.Route)
+		}
+		pending.Resolve(ssr.RenderCallback{
+			HookID:       task.HookID,
+			RequestRoute: task.RequestRoute,
+			HTML:         "<html>forbidden</html>",
+		})
+	}()
+
+	req := httptest.NewRequest("GET", "/admin/42", nil)
+	req.AddCookie(cookie)
+	if _, err := app.Server().App().Test(req); err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+}
+
+func TestPage_ForbiddenDataOnly(t *testing.T) {
+	app, client, _, _ := setupGuardTestApp(t)
+	cookie := loginAs(t, app, "/test-login-guest")
+
+	req := httptest.NewRequest("GET", "/admin/42", nil)
+	req.Header.Set("X-Ven-Data-Only", "true")
+	req.AddCookie(cookie)
+	resp, err := app.Server().App().Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != 403 {
+		t.Fatalf("expected 403, got %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Fatalf("expected JSON body, got %s", ct)
+	}
+	// data-only 拒绝不触发 SSR
+	expectNoTask(t, client, 200*time.Millisecond)
+}

@@ -8,20 +8,30 @@ import (
 
 // App 是 hybrid 框架应用，底层基于 *httpserver.Server。
 type App struct {
-	server *httpserver.Server
-	pages  []page
+	server        *httpserver.Server
+	pages         []page
+	loginRedirect string // 401 时的登录跳转目标
 }
+
+// defaultLoginRedirect 是默认的登录跳转路径。
+const defaultLoginRedirect = "/login"
 
 // New 创建 hybrid 应用，注入已构建好的 *httpserver.Server。
 func New(server *httpserver.Server) *App {
 	return &App{
-		server: server,
+		server:        server,
+		loginRedirect: defaultLoginRedirect,
 	}
 }
 
 // Server 返回底层的 *httpserver.Server。
 func (a *App) Server() *httpserver.Server {
 	return a.server
+}
+
+// SetLoginRedirect 配置 401（未登录）时的登录跳转目标，默认 /login。
+func (a *App) SetLoginRedirect(path string) {
+	a.loginRedirect = path
 }
 
 // RegisterRole 注册一个角色（权限等级），可指定继承的父角色。
