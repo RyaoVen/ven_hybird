@@ -91,12 +91,13 @@ func TestStoreDoSingleFlight(t *testing.T) {
 	const n = 5
 	var wg sync.WaitGroup
 	results := make([]*Entry, n)
+	shareds := make([]bool, n)
 	errs := make([]error, n)
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			results[i], errs[i] = store.Do("k", fn)
+			results[i], shareds[i], errs[i] = store.Do("k", fn)
 		}(i)
 	}
 	wg.Wait()
@@ -113,12 +114,20 @@ func TestStoreDoSingleFlight(t *testing.T) {
 	if got, ok := store.Get("k"); !ok || got.HTML != "hello" {
 		t.Fatal("expected cached entry after Do")
 	}
+	// 计数：回源 1 次，无错误
+	hits, misses, _ := store.Stats()
+	if misses != 1 {
+		t.Fatalf("expected misses=1, got %d", misses)
+	}
+	if hits == 0 {
+		t.Fatal("expected hits>0 after cached Get")
+	}
 }
 
 func TestStoreDoErrorNotCached(t *testing.T) {
 	store := NewStore(NewMemoryBackend(10), time.Hour)
 	boom := errors.New("boom")
-	if _, err := store.Do("k", func() (*Entry, error) { return nil, boom }); !errors.Is(err, boom) {
+	if _, _, err := store.Do("k", func() (*Entry, error) { return nil, boom }); !errors.Is(err, boom) {
 		t.Fatalf("expected boom, got %v", err)
 	}
 	if _, ok := store.Get("k"); ok {
@@ -126,11 +135,15 @@ func TestStoreDoErrorNotCached(t *testing.T) {
 	}
 	// 失败后后续 Do 可以重试
 	calls := 0
-	entry, err := store.Do("k", func() (*Entry, error) {
+	entry, _, err := store.Do("k", func() (*Entry, error) {
 		calls++
 		return &Entry{HTML: "ok"}, nil
 	})
 	if err != nil || calls != 1 || entry.HTML != "ok" {
 		t.Fatalf("expected retry success, got entry=%+v err=%v calls=%d", entry, err, calls)
+	}
+	// 计数：两次回源（失败那次也算回源）
+	if _, misses, _ := store.Stats(); misses != 2 {
+		t.Fatalf("expected misses=2, got %d", misses)
 	}
 }

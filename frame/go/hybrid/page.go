@@ -38,10 +38,12 @@ func (a *App) Page(pattern string, role []string, h PageHandler) {
 		if len(levels) > 0 {
 			userRole, ok := a.server.CookieAuth(ctx)
 			if !ok {
+				log.Printf("auth: denied %s %s reason=unauthenticated pattern=%s", ctx.Method(), ctx.Path(), pattern)
 				return ctx.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
 			}
 			allowed, err := a.server.CheckAuth(userRole, levels)
 			if err != nil || !allowed {
+				log.Printf("auth: denied %s %s reason=forbidden role=%s pattern=%s", ctx.Method(), ctx.Path(), userRole, pattern)
 				return ctx.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "forbidden"})
 			}
 		}

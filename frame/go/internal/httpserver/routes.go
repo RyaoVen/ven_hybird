@@ -11,8 +11,13 @@ func (s *Server) RegisterInternalRoutes() {
 	s.app.Post("/_internal/render-callback", s.HandleRenderCallback)
 
 	// 健康检查端点：用于负载均衡器和容器编排系统的存活探针
+	// 附带页面缓存运行计数（命中/回源/共享），供观测
 	s.app.Get("/healthz", func(ctx *fiber.Ctx) error {
-		return ctx.JSON(fiber.Map{"status": "ok"})
+		hits, misses, shared := s.pageCache.Stats()
+		return ctx.JSON(fiber.Map{
+			"status":    "ok",
+			"pageCache": fiber.Map{"hits": hits, "misses": misses, "shared": shared},
+		})
 	})
 
 	// 静态资源服务：将 /assets 路径映射到本地 AssetsDir 目录

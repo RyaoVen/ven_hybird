@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/url"
+	"sync/atomic"
 	"time"
 )
 
@@ -30,10 +31,14 @@ type Backend interface {
 }
 
 // Store 页面缓存：TTL 与防击穿语义在这里，后端只做 KV 存取。
+// hits/misses/shared 为运行计数，供日志与监控观测。
 type Store struct {
 	backend Backend
 	ttl     time.Duration
 	flight  *flightGroup
+	hits    atomic.Uint64 // 缓存命中次数
+	misses  atomic.Uint64 // 回源次数（无论结果成败）
+	shared  atomic.Uint64 // flight 共享次数
 }
 
 // NewStore 创建页面缓存，backend 为底层 KV 实现，ttl 为条目有效期。
@@ -41,9 +46,18 @@ func NewStore(backend Backend, ttl time.Duration) *Store {
 	return &Store{backend: backend, ttl: ttl, flight: newFlightGroup()}
 }
 
+// Stats 返回缓存运行计数：命中、回源、共享次数。
+func (s *Store) Stats() (hits, misses, shared uint64) {
+	return s.hits.Load(), s.misses.Load(), s.shared.Load()
+}
+
 // Get 查找缓存条目，未命中或已过期返回 false。
 func (s *Store) Get(key string) (*Entry, bool) {
-	return s.backend.Get(key)
+	entry, ok := s.backend.Get(key)
+	if ok {
+		s.hits.Add(1)
+	}
+	return entry, ok
 }
 
 // Invalidate 删除指定 key 的缓存条目。
@@ -59,20 +73,24 @@ func (s *Store) InvalidatePrefix(prefix string) {
 // Do 执行带回填的回源：先查缓存，命中直接返回；
 // 未命中走防击穿——同 key 并发仅 leader 执行 fn，follower 等待并共享结果。
 // fn 成功则先把结果回填缓存，再共享给 follower；fn 失败共享错误且不写缓存。
-func (s *Store) Do(key string, fn func() (*Entry, error)) (*Entry, error) {
+// 返回 shared=true 表示结果来自缓存或 flight 共享（本次未回源）。
+func (s *Store) Do(key string, fn func() (*Entry, error)) (entry *Entry, shared bool, err error) {
 	if entry, ok := s.backend.Get(key); ok {
-		return entry, nil
+		s.hits.Add(1)
+		return entry, true, nil
 	}
 	if entry, err, shared := s.flight.acquire(key); shared {
-		return entry, err
+		s.shared.Add(1)
+		return entry, true, err
 	}
-	entry, err := fn()
+	entry, err = fn()
+	s.misses.Add(1)
 	if err == nil && entry != nil && entry.HTML != "" {
 		// 先回填再唤醒，保证 follower 与后续请求立即可用
 		_ = s.backend.Set(key, entry, s.ttl)
 	}
 	s.flight.complete(key, entry, err)
-	return entry, err
+	return entry, false, err
 }
 
 // Key 构造缓存键：path + 规范化 query + data 指纹。

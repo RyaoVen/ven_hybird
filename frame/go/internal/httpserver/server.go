@@ -51,6 +51,7 @@ func New(
 			})
 		},
 	})
+	app.Use(requestLogger())
 
 	return &Server{
 		app:       app,
