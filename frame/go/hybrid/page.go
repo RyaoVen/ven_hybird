@@ -19,6 +19,9 @@ type page struct {
 
 const dataOnlyHeader = "X-Ven-Data-Only"
 
+// loginPathHeader 是 401 响应携带登录跳转目标的响应头（SPA router 读取它决定跳哪里）。
+const loginPathHeader = "X-Ven-Login-Path"
+
 // forbiddenPageRoute 是 403 错误页的路由（原地渲染，不跳转）。
 const forbiddenPageRoute = "/403"
 
@@ -51,6 +54,7 @@ func (a *App) Page(pattern string, role []string, h PageHandler) error {
 			if !ok {
 				log.Printf("auth: denied %s %s reason=unauthenticated pattern=%s", ctx.Method(), ctx.Path(), pattern)
 				if isDataOnly(ctx) {
+					ctx.Set(loginPathHeader, a.loginRedirect)
 					return ctx.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
 				}
 				// HTML 导航：302 跳登录页，next 为原始路径（含 query）

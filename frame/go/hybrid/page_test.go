@@ -102,6 +102,9 @@ func TestPage_ProtectedRequiresCookieAuth(t *testing.T) {
 	if resp.StatusCode != 401 {
 		t.Fatalf("expected 401 for protected page without cookie, got %d", resp.StatusCode)
 	}
+	if got := resp.Header.Get("X-Ven-Login-Path"); got != "/login" {
+		t.Fatalf("expected X-Ven-Login-Path=/login, got %q", got)
+	}
 }
 
 func TestPage_GrantAuthFlow(t *testing.T) {
