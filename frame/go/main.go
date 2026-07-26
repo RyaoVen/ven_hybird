@@ -4,6 +4,10 @@ package main
 import (
 	"context"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"ven_hybird/build"
 	"ven_hybird/hybrid"
@@ -26,8 +30,8 @@ func main() {
 	pending := ssr.NewPendingRegistry(cfg.MaxPendingRenders)
 
 	// 步骤 3: 从 Node 端拉取全部页面路由模式（nodePagesPattern）
-	// Node 是页面路由权威，Go 用它校验页面注册
-	patterns, err := pagepattern.Fetch(context.Background(), cfg.NodeWorkerURL, cfg.InternalToken, cfg.NodeSubmitTimeout)
+	// Node 是页面路由权威，Go 用它校验页面注册；失败重试 3 次退避
+	patterns, err := fetchPatternsWithRetry(cfg, 3)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -42,13 +46,38 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// 步骤 6: 注册页面兜底路由
-	// 必须最后注册，fiber 按注册顺序匹配，否则业务页面会被兜底抢先
-	server.RegisterPageFallback()
+	// 步骤 6: 注册退出信号处理，收到 SIGINT/SIGTERM 时优雅关停
+	// （排空间进行中的请求，pending 渲染随超时自然结束）
+	shutdown := make(chan os.Signal, 1)
+	signal.Notify(shutdown, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-shutdown
+		log.Printf("shutdown signal received, draining...")
+		if err := server.App().ShutdownWithTimeout(5 * time.Second); err != nil {
+			log.Printf("graceful shutdown failed: %v", err)
+		}
+	}()
 
-	// 步骤 7: 启动 HTTP 服务器，开始监听指定地址
+	// 步骤 7: 启动 HTTP 服务器（app.Listen 内部先注册页面兜底路由）
 	log.Printf("VenHybird Go gateway listening on %s", cfg.ListenAddr)
-	if err := server.App().Listen(cfg.ListenAddr); err != nil {
+	if err := app.Listen(cfg.ListenAddr); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// fetchPatternsWithRetry 拉取页面路由模式，失败按次数退避重试。
+func fetchPatternsWithRetry(cfg config.Config, attempts int) (*pagepattern.Validator, error) {
+	var err error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		var patterns *pagepattern.Validator
+		patterns, err = pagepattern.Fetch(context.Background(), cfg.NodeWorkerURL, cfg.InternalToken, cfg.NodeSubmitTimeout)
+		if err == nil {
+			return patterns, nil
+		}
+		log.Printf("fetch page patterns attempt %d/%d failed: %v", attempt, attempts, err)
+		if attempt < attempts {
+			time.Sleep(time.Duration(attempt) * time.Second)
+		}
+	}
+	return nil, err
 }

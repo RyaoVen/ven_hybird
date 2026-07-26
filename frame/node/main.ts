@@ -35,6 +35,19 @@ async function main(): Promise<void> {
         () => pageBuild.getRouter().getPages().map((page) => page.route),
     );
 
+    // 优雅关停：收到退出信号时停止接收新请求并排空中断连接
+    const shutdown = async (): Promise<void> => {
+        console.log("shutdown signal received, stopping...");
+        try {
+            await controller.getServer()?.stop();
+        } catch (error) {
+            console.error("graceful stop failed:", (error as Error).message);
+        }
+        process.exit(0);
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+
     console.log("页面路由:", pageBuild.getRouter().getPages().map((page) => page.route));
     console.log("任务入口: POST /render");
     console.log("页面模式: GET /pages");
