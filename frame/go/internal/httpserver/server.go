@@ -2,7 +2,9 @@
 package httpserver
 
 import (
+	"context"
 	"log"
+	"sync"
 	"time"
 
 	"ven_hybird/internal/auth"
@@ -16,15 +18,20 @@ import (
 
 // Server 是 HTTP 服务器核心结构体。
 type Server struct {
-	app       *fiber.App             // Fiber 应用实例
-	config    config.Config          // 应用配置
-	ssr       ssr.Client             // SSR 渲染客户端
-	pending   *ssr.PendingRegistry   // pending 任务注册中心
-	hookIDs   ssr.HookIDGenerator    // HookID 生成器
-	auth      *auth.Registry         // 权限等级注册表
-	sessions  *auth.SessionStore     // 会话存储（token → role）
-	patterns  *pagepattern.Validator // 页面 pattern 校验器
-	pageCache *pagecache.Store       // 页面渲染结果缓存
+	app       *fiber.App           // Fiber 应用实例
+	config    config.Config        // 应用配置
+	ssr       ssr.Client           // SSR 渲染客户端
+	pending   *ssr.PendingRegistry // pending 任务注册中心
+	hookIDs   ssr.HookIDGenerator  // HookID 生成器
+	auth      *auth.Registry       // 权限等级注册表
+	sessions  *auth.SessionStore   // 会话存储（token → role）
+	pageCache *pagecache.Store     // 页面渲染结果缓存
+
+	patternMu   sync.RWMutex           // 保护 patterns 指针（校验失败重拉时换入新校验器）
+	patterns    *pagepattern.Validator // 页面 pattern 校验器
+	lastRefetch time.Time              // 上次 pattern 重拉时间（节流用）
+
+	fallbackRegistered bool // 页面兜底路由是否已注册（RegisterPageFallback 幂等标记）
 }
 
 // New 创建并初始化 HTTP 服务器实例。
@@ -38,7 +45,7 @@ func New(
 ) *Server {
 	app := fiber.New(fiber.Config{
 		AppName:               "VenHybird",
-		ReadTimeout:           10 * time.Second,
+		ReadTimeout:           60 * time.Second, // 大于浏览器 keep-alive 空闲，消除 408 噪音
 		WriteTimeout:          cfg.RenderTimeout + 5*time.Second,
 		IdleTimeout:           120 * time.Second,
 		DisableStartupMessage: false,
@@ -82,8 +89,42 @@ func (s *Server) InvalidatePage(path string) {
 }
 
 // ValidatePagePattern 校验页面 pattern 是否合法。
+// 校验失败时节流重拉一次 Node 页面列表（Node 可能新增了页面），再校验一次。
 func (s *Server) ValidatePagePattern(pattern string) error {
+	s.patternMu.RLock()
+	err := s.patterns.Validate(pattern)
+	s.patternMu.RUnlock()
+	if err == nil {
+		return nil
+	}
+	if !s.refetchPatterns() {
+		return err
+	}
+	s.patternMu.RLock()
+	defer s.patternMu.RUnlock()
 	return s.patterns.Validate(pattern)
+}
+
+// patternRefetchInterval 是 pattern 重拉的最小间隔（节流）。
+const patternRefetchInterval = 10 * time.Second
+
+// refetchPatterns 从 Node 重拉页面列表并换入新校验器。
+// 节流：距上次重拉不足 patternRefetchInterval 时直接返回 false。
+func (s *Server) refetchPatterns() bool {
+	s.patternMu.Lock()
+	defer s.patternMu.Unlock()
+	if time.Since(s.lastRefetch) < patternRefetchInterval {
+		return false
+	}
+	s.lastRefetch = time.Now()
+	validator, err := pagepattern.Fetch(context.Background(), s.config.NodeWorkerURL, s.config.InternalToken, s.config.NodeSubmitTimeout)
+	if err != nil {
+		log.Printf("refetch page patterns failed: %v", err)
+		return false
+	}
+	s.patterns = validator
+	log.Printf("refetched page patterns from node")
+	return true
 }
 
 // RegisterRole 注册一个角色（权限等级）。

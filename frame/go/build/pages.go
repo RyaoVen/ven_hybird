@@ -15,11 +15,21 @@ func Register(a *hybrid.App) error {
 
 	registerAuthRoutes(a)
 
-	a.Page("/login", nil, emptyPage)
-	a.Page("/403", nil, emptyPage)
-	a.Page("/home", nil, homePage)
-	a.Page("/about", nil, aboutPage)
-	a.Page("/blog/:id", []string{"guest"}, blogPage)
+	for _, p := range []struct {
+		pattern string
+		roles   []string
+		handler hybrid.PageHandler
+	}{
+		{"/login", nil, emptyPage},
+		{"/403", nil, emptyPage},
+		{"/home", nil, homePage},
+		{"/about", nil, aboutPage},
+		{"/blog/:id", []string{"guest"}, blogPage},
+	} {
+		if err := a.Page(p.pattern, p.roles, p.handler); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

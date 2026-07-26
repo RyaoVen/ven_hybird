@@ -44,3 +44,10 @@ func (a *App) RegisterRole(role string, parents []string) error {
 func (a *App) InvalidatePage(path string) {
 	a.server.InvalidatePage(path)
 }
+
+// Listen 注册页面兜底路由并启动监听。
+// 兜底路由必须最后注册（fiber 按注册顺序匹配），统一在这里强制顺序。
+func (a *App) Listen(addr string) error {
+	a.server.RegisterPageFallback()
+	return a.server.App().Listen(addr)
+}

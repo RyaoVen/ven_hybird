@@ -1,6 +1,7 @@
 package hybrid
 
 import (
+	"fmt"
 	"log"
 	"net/url"
 
@@ -26,24 +27,24 @@ func isDataOnly(ctx *fiber.Ctx) bool {
 	return ctx.Get(dataOnlyHeader) == "true"
 }
 
-// Page 注册一个页面路由。
-// 注册流程：校验 pattern → 解析 role 为 AuthLevels → 在 fiber 上注册 GET 路由。
+// Page 注册一个页面路由（GET + HEAD）。
+// 注册流程：校验 pattern → 解析 role 为 AuthLevels → 在 fiber 上注册路由；失败返回 error。
 // 请求处理流程：（有 role 要求时）cookie 鉴权 + 权限校验 → 执行 handler → 截流 JSON → 按请求头决定 SSR/JSON。
 // role 为空的页面默认公开，不做任何鉴权。
 // 鉴权失败：data-only 返回 401/403 裸 JSON；HTML 导航 401 跳登录页、403 原地渲染错误页。
-func (a *App) Page(pattern string, role []string, h PageHandler) {
+func (a *App) Page(pattern string, role []string, h PageHandler) error {
 	if err := a.server.ValidatePagePattern(pattern); err != nil {
-		log.Fatalf("hybrid: page pattern %q invalid: %v", pattern, err)
+		return fmt.Errorf("hybrid: page pattern %q invalid: %w", pattern, err)
 	}
 
 	levels, err := a.server.ResolveRoles(role)
 	if err != nil {
-		log.Fatalf("hybrid: resolve roles for page %q failed: %v", pattern, err)
+		return fmt.Errorf("hybrid: resolve roles for page %q failed: %w", pattern, err)
 	}
 
 	a.pages = append(a.pages, page{Pattern: pattern, AuthLevels: levels})
 
-	a.server.App().Get(pattern, func(ctx *fiber.Ctx) error {
+	handler := func(ctx *fiber.Ctx) error {
 		// 1. 鉴权：仅当页面有 role 要求时执行，公开页面直接放行
 		if len(levels) > 0 {
 			userRole, ok := a.server.CookieAuth(ctx)
@@ -81,5 +82,8 @@ func (a *App) Page(pattern string, role []string, h PageHandler) {
 			return a.server.RenderPage(ctx, c.data)
 		}
 		return ctx.JSON(c.data)
-	})
+	}
+	a.server.App().Get(pattern, handler)
+	a.server.App().Head(pattern, handler)
+	return nil
 }

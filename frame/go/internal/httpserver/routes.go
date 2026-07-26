@@ -34,7 +34,12 @@ func (s *Server) RegisterInternalRoutes() {
 // RegisterPageFallback 注册通用页面渲染路由（兜底），
 // 匹配所有未被已注册路由处理的 GET/HEAD 请求，交由 HandlePage 执行 SSR。
 // 必须在所有具体页面路由注册之后调用，否则会抢先匹配。
+// 幂等：重复调用不会重复注册（hybrid.App.Listen 内部已调用一次）。
 func (s *Server) RegisterPageFallback() {
+	if s.fallbackRegistered {
+		return
+	}
+	s.fallbackRegistered = true
 	s.app.Get("/*", s.HandlePage)
 	s.app.Head("/*", s.HandlePage)
 }

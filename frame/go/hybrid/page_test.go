@@ -46,7 +46,7 @@ func setupTestApp() (*App, *fakeSSRClient, *ssr.PendingRegistry, *httpserver.Ser
 
 func TestPage_DataOnly(t *testing.T) {
 	app, _, _, _ := setupTestApp()
-	app.Page("/test/:id", nil, func(c *PageCtx) error {
+	mustPage(t, app, "/test/:id", nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"id": c.Param("id")})
 	})
 
@@ -68,7 +68,7 @@ func TestPage_DataOnly(t *testing.T) {
 func TestPage_PublicSkipsCookieAuth(t *testing.T) {
 	// 无 cookie 时公开页面仍应放行
 	app, _, _, _ := setupTestApp()
-	app.Page("/test/:id", nil, func(c *PageCtx) error {
+	mustPage(t, app, "/test/:id", nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"id": c.Param("id")})
 	})
 
@@ -89,7 +89,7 @@ func TestPage_ProtectedRequiresCookieAuth(t *testing.T) {
 	if err := app.RegisterRole("admin", nil); err != nil {
 		t.Fatalf("register role failed: %v", err)
 	}
-	app.Page("/admin/:id", []string{"admin"}, func(c *PageCtx) error {
+	mustPage(t, app, "/admin/:id", []string{"admin"}, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"id": c.Param("id")})
 	})
 
@@ -109,7 +109,7 @@ func TestPage_GrantAuthFlow(t *testing.T) {
 	if err := app.RegisterRole("admin", nil); err != nil {
 		t.Fatalf("register role failed: %v", err)
 	}
-	app.Page("/admin/:id", []string{"admin"}, func(c *PageCtx) error {
+	mustPage(t, app, "/admin/:id", []string{"admin"}, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"id": c.Param("id")})
 	})
 
@@ -181,7 +181,7 @@ func TestPage_GrantAuthFlow(t *testing.T) {
 
 func TestPage_SSR(t *testing.T) {
 	app, client, pending, _ := setupTestApp()
-	app.Page("/ssr/:name", nil, func(c *PageCtx) error {
+	mustPage(t, app, "/ssr/:name", nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"name": c.Param("name")})
 	})
 
@@ -244,7 +244,7 @@ func expectNoTask(t *testing.T, client *fakeSSRClient, window time.Duration) {
 
 func TestPage_CacheHit(t *testing.T) {
 	app, client, pending, _ := setupTestApp()
-	app.Page("/ssr/:name", nil, func(c *PageCtx) error {
+	mustPage(t, app, "/ssr/:name", nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"name": c.Param("name")})
 	})
 	stop := resolveTasks(client, pending, "<html>cached</html>", nil)
@@ -271,7 +271,7 @@ func TestPage_CacheHit(t *testing.T) {
 func TestPage_CacheDataVariation(t *testing.T) {
 	app, client, pending, _ := setupTestApp()
 	// data 随 query 变化 → 不同 key → 每次都回源
-	app.Page("/ssr/:name", nil, func(c *PageCtx) error {
+	mustPage(t, app, "/ssr/:name", nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"q": c.Query("q")})
 	})
 	stop := resolveTasks(client, pending, "<html>ok</html>", nil)
@@ -297,7 +297,7 @@ func TestPage_CacheDataVariation(t *testing.T) {
 
 func TestPage_CacheSkips404(t *testing.T) {
 	app, client, pending, _ := setupTestApp()
-	app.Page("/ssr/:name", nil, func(c *PageCtx) error {
+	mustPage(t, app, "/ssr/:name", nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"name": c.Param("name")})
 	})
 	stop := resolveTasks(client, pending, "", &ssr.RenderError{Code: "PAGE_NOT_FOUND", Message: "not found"})
@@ -319,7 +319,7 @@ func TestPage_CacheSkips404(t *testing.T) {
 
 func TestPage_InvalidatePage(t *testing.T) {
 	app, client, pending, _ := setupTestApp()
-	app.Page("/ssr/:name", nil, func(c *PageCtx) error {
+	mustPage(t, app, "/ssr/:name", nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"name": c.Param("name")})
 	})
 	stop := resolveTasks(client, pending, "<html>v1</html>", nil)
@@ -343,7 +343,7 @@ func TestPage_InvalidatePage(t *testing.T) {
 
 func TestPage_CacheSingleFlight(t *testing.T) {
 	app, client, pending, _ := setupTestApp()
-	app.Page("/ssr/:name", nil, func(c *PageCtx) error {
+	mustPage(t, app, "/ssr/:name", nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"name": c.Param("name")})
 	})
 	stop := resolveTasks(client, pending, "<html>flight</html>", nil)
@@ -385,7 +385,7 @@ func setupGuardTestApp(t *testing.T) (*App, *fakeSSRClient, *ssr.PendingRegistry
 	if err := app.RegisterRole("admin", nil); err != nil {
 		t.Fatalf("register admin failed: %v", err)
 	}
-	app.Page("/admin/:id", []string{"admin"}, func(c *PageCtx) error {
+	mustPage(t, app, "/admin/:id", []string{"admin"}, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"id": c.Param("id")})
 	})
 	server.App().Post("/test-login-guest", func(ctx *fiber.Ctx) error {
@@ -509,4 +509,37 @@ func TestPage_ForbiddenDataOnly(t *testing.T) {
 	}
 	// data-only 拒绝不触发 SSR
 	expectNoTask(t, client, 200*time.Millisecond)
+}
+
+// mustPage 注册页面并在失败时终止测试（适配 Page 的 error 返回）。
+func mustPage(t *testing.T, app *App, pattern string, roles []string, h PageHandler) {
+	t.Helper()
+	if err := app.Page(pattern, roles, h); err != nil {
+		t.Fatalf("register page %q failed: %v", pattern, err)
+	}
+}
+
+func TestPage_InvalidPatternReturnsError(t *testing.T) {
+	app, _, _, _ := setupTestApp()
+	// "/not-registered" 不在测试 validator 的 pattern 列表里
+	if err := app.Page("/not-registered", nil, func(c *PageCtx) error { return nil }); err == nil {
+		t.Fatal("expected error for unregistered pattern, got nil")
+	}
+}
+
+func TestPage_HeadRequest(t *testing.T) {
+	app, _, _, _ := setupTestApp()
+	mustPage(t, app, "/test/:id", nil, func(c *PageCtx) error {
+		return c.JSON(fiber.Map{"id": c.Param("id")})
+	})
+
+	req := httptest.NewRequest("HEAD", "/test/42", nil)
+	req.Header.Set("X-Ven-Data-Only", "true")
+	resp, err := app.Server().App().Test(req)
+	if err != nil {
+		t.Fatalf("HEAD request failed: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200 for HEAD, got %d", resp.StatusCode)
+	}
 }
