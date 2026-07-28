@@ -15,20 +15,27 @@ func Register(a *hybrid.App) error {
 
 	registerAuthRoutes(a)
 
+	// 静态页（ISR 物化）：公开、内容稳定，落盘后由中间件直发
 	for _, p := range []struct {
-		pattern string
-		roles   []string
-		handler hybrid.PageHandler
+		pattern   string
+		maxPages  int
+		smartLoad bool
+		handler   hybrid.PageHandler
 	}{
-		{"/login", nil, emptyPage},
-		{"/403", nil, emptyPage},
-		{"/home", nil, homePage},
-		{"/about", nil, aboutPage},
-		{"/blog/:id", []string{"guest"}, blogPage},
+		{"/login", 1, false, emptyPage},
+		{"/403", 1, false, emptyPage},
+		{"/home", 1, false, homePage},
+		{"/about", 1, false, aboutPage},
+		{"/news/:id", 10, true, newsPage},
 	} {
-		if err := a.Page(p.pattern, p.roles, p.handler); err != nil {
+		if err := a.StaticPage(p.pattern, p.maxPages, p.smartLoad, p.handler); err != nil {
 			return err
 		}
+	}
+
+	// 动态页（鉴权 + 内存缓存）
+	if err := a.Page("/blog/:id", []string{"guest"}, blogPage); err != nil {
+		return err
 	}
 	return nil
 }
@@ -62,5 +69,17 @@ func blogPage(c *hybrid.PageCtx) error {
 	return c.JSON(map[string]any{
 		"id":    id,
 		"title": "blog post " + id,
+	})
+}
+
+// newsPage 新闻详情页（静态页 demo），读取路径参数并返回新闻数据。
+func newsPage(c *hybrid.PageCtx) error {
+	id := c.Param("id")
+	if id == "" {
+		return c.NotFound()
+	}
+	return c.JSON(map[string]any{
+		"id":    id,
+		"title": "news " + id,
 	})
 }

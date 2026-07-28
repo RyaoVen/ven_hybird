@@ -25,7 +25,9 @@ func (s *Server) HandlePage(ctx *fiber.Ctx) error {
 // 未命中防击穿回源，成功后回填缓存。404/502/504 等失败结果不缓存。
 // 渲染事件（缓存 hit/miss/shared、Node 耗时）写日志。
 func (s *Server) RenderPage(ctx *fiber.Ctx, data any) error {
-	return s.renderPage(ctx, ctx.Path(), data)
+	// ctx.Path() 是 fasthttp 零拷贝字符串（底层是池化缓冲区），
+	// route 会被 ISR 跨请求留存，必须先克隆
+	return s.renderPage(ctx, strings.Clone(ctx.Path()), data)
 }
 
 // RenderPageAs 以指定路由渲染页面并在当前 URL 写回（用于 /403 等错误页原地渲染）。
@@ -41,6 +43,10 @@ func (s *Server) renderPage(ctx *fiber.Ctx, route string, data any) error {
 	if keyErr == nil {
 		if entry, ok := s.pageCache.Get(key); ok {
 			log.Printf("render: hit %s %s", ctx.Method(), route)
+			// 自愈：缓存命中但物化文件缺失（外部删除）时补写
+			if !s.isrStore.Exists(route) {
+				s.materializeQuiet(route, entry.HTML)
+			}
 			ctx.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
 			return ctx.SendString(entry.HTML)
 		}
@@ -73,6 +79,8 @@ func (s *Server) renderPage(ctx *fiber.Ctx, route string, data any) error {
 			log.Printf("render: shared %s %s", ctx.Method(), route)
 		} else {
 			log.Printf("render: miss %s %s node=%dms", ctx.Method(), route, entry.Duration)
+			// ISR 物化：声明为静态页的路径在回源渲染后落盘（仅 leader，避免 follower 重复写）
+			s.materializeQuiet(route, entry.HTML)
 		}
 	}
 	ctx.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
@@ -92,6 +100,11 @@ func (e *renderError) Error() string { return e.message }
 // 成功返回可缓存的 Entry，失败返回 renderError（不缓存）。
 // route 为页面匹配路由（兜底/常规渲染为请求路径，错误页渲染为错误页路由）。
 func (s *Server) render(ctx *fiber.Ctx, route string, data any) (*pagecache.Entry, error) {
+	return s.renderWithQuery(route, ctx.Queries(), data)
+}
+
+// renderWithQuery 是 render 的核心（显式 query 版本，供后台预渲染复用）。
+func (s *Server) renderWithQuery(route string, query map[string]string, data any) (*pagecache.Entry, error) {
 	// 步骤 1: 生成唯一的 HookID
 	hookID, err := s.hookIDs.New()
 	if err != nil {
@@ -110,7 +123,7 @@ func (s *Server) render(ctx *fiber.Ctx, route string, data any) (*pagecache.Entr
 	bootstrap := ssr.PageBootstrap{
 		Route:        route,
 		Params:       map[string]string{},
-		Query:        ctx.Queries(),
+		Query:        query,
 		InitialState: data,
 	}
 	task := ssr.RenderTask{

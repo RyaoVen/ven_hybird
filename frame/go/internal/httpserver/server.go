@@ -9,6 +9,7 @@ import (
 
 	"ven_hybird/internal/auth"
 	"ven_hybird/internal/config"
+	"ven_hybird/internal/isr"
 	"ven_hybird/internal/pagecache"
 	"ven_hybird/internal/pagepattern"
 	"ven_hybird/internal/ssr"
@@ -26,12 +27,14 @@ type Server struct {
 	auth      *auth.Registry       // 权限等级注册表
 	sessions  *auth.SessionStore   // 会话存储（token → role）
 	pageCache *pagecache.Store     // 页面渲染结果缓存
+	isrStore  *isr.Store           // ISR 文件层
 
 	patternMu   sync.RWMutex           // 保护 patterns 指针（校验失败重拉时换入新校验器）
 	patterns    *pagepattern.Validator // 页面 pattern 校验器
 	lastRefetch time.Time              // 上次 pattern 重拉时间（节流用）
 
-	fallbackRegistered bool // 页面兜底路由是否已注册（RegisterPageFallback 幂等标记）
+	staticDecls        map[string]*isr.Declaration // StaticPage 声明（按模板字符串）
+	fallbackRegistered bool                        // 页面兜底路由是否已注册（RegisterPageFallback 幂等标记）
 }
 
 // New 创建并初始化 HTTP 服务器实例。
@@ -61,15 +64,17 @@ func New(
 	app.Use(requestLogger())
 
 	return &Server{
-		app:       app,
-		config:    cfg,
-		ssr:       client,
-		pending:   pending,
-		hookIDs:   hookIDs,
-		auth:      auth.NewRegistry(),
-		sessions:  auth.NewSessionStore(auth.NewMemoryBackend(), sessionTTL),
-		patterns:  patterns,
-		pageCache: pagecache.NewStore(pagecache.NewMemoryBackend(pageCacheCapacity), pageCacheTTL),
+		app:         app,
+		config:      cfg,
+		ssr:         client,
+		pending:     pending,
+		hookIDs:     hookIDs,
+		auth:        auth.NewRegistry(),
+		sessions:    auth.NewSessionStore(auth.NewMemoryBackend(), sessionTTL),
+		patterns:    patterns,
+		pageCache:   pagecache.NewStore(pagecache.NewMemoryBackend(pageCacheCapacity), pageCacheTTL),
+		isrStore:    isr.NewStore(cfg.IsrDir, cfg.IsrEnabled),
+		staticDecls: make(map[string]*isr.Declaration),
 	}
 }
 

@@ -29,6 +29,10 @@ func (s *Server) RegisterInternalRoutes() {
 	api.All("/*", func(ctx *fiber.Ctx) error {
 		return ctx.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "api route not found"})
 	})
+
+	// ISR 静态直发中间件：命中物化文件直接返回，miss 放行到业务页面与兜底
+	// 注册在内部端点之后、业务页面之前（业务页面由后续注册流程挂载）
+	s.app.Use(s.isrStore.Middleware())
 }
 
 // RegisterPageFallback 注册通用页面渲染路由（兜底），
