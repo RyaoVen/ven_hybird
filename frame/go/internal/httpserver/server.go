@@ -82,7 +82,7 @@ func New(
 		}
 	}
 
-	return &Server{
+	s := &Server{
 		app:            app,
 		config:         cfg,
 		ssr:            client,
@@ -95,6 +95,17 @@ func New(
 		isrStore:       isr.NewStore(cfg.IsrDir, cfg.IsrEnabled),
 		eventTransport: eventTransport,
 		staticDecls:    make(map[string]*isr.Declaration),
+	}
+	// 启动重载 ISR：变更事件不做持久化，停机期间漏收的失效无补偿通道，
+	// 重启不沿用上次运行的物化产物（清空后懒回源重新物化）
+	s.reloadISR()
+	return s
+}
+
+// reloadISR 启动重载：清空上次运行的物化产物（不沿用旧文件，懒回源重新物化）。
+func (s *Server) reloadISR() {
+	if cleared := s.isrStore.ClearAll(); cleared > 0 {
+		log.Printf("isr: startup reload cleared %d materialized files", cleared)
 	}
 }
 

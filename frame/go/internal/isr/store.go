@@ -180,6 +180,30 @@ func (s *Store) Invalidate(matcher *Matcher) ([]string, error) {
 	return matched, nil
 }
 
+// ClearAll 清空全部物化文件与访问统计，返回清空数量。
+// 启动重载用：变更事件不做持久化，停机期间漏收的失效没有补偿通道，
+// 因此实例重启不沿用上次运行的产物，清空后懒回源重新物化（目录本身保留）。
+func (s *Store) ClearAll() int {
+	if !s.enabled {
+		return 0
+	}
+	removed := 0
+	root := filepath.Clean(s.dir)
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".html") {
+			return nil
+		}
+		if err := os.Remove(path); err == nil {
+			removed++
+		}
+		return nil
+	})
+	s.mu.Lock()
+	s.access = make(map[string]*accessEntry)
+	s.mu.Unlock()
+	return removed
+}
+
 // HotPaths 返回匹配器范围内按访问计数降序的前 limit 个路径。
 func (s *Store) HotPaths(matcher *Matcher, limit int) []string {
 	s.mu.RLock()
