@@ -18,6 +18,9 @@ import (
 // 请求流程：ISR 中间件命中物化文件直接返回（不经过本 handler）；
 // miss 时执行 handler 取数 → RenderPage（内部完成落盘与上限治理）。
 func (a *App) StaticPage(dynamicUrl string, maxPages int, smartLoad bool, h PageHandler) error {
+	if err := checkPagePatternAllowed(dynamicUrl); err != nil {
+		return err
+	}
 	decl, err := isr.ParseDeclaration(dynamicUrl, maxPages, smartLoad)
 	if err != nil {
 		return err

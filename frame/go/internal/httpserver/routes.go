@@ -23,13 +23,6 @@ func (s *Server) RegisterInternalRoutes() {
 	// 静态资源服务：将 /assets 路径映射到本地 AssetsDir 目录
 	s.app.Static("/assets", s.config.AssetsDir)
 
-	// API 路由组：当前为占位实现，所有 /api/* 请求返回 404
-	// 预留给后续的 API 接口扩展
-	api := s.app.Group("/api")
-	api.All("/*", func(ctx *fiber.Ctx) error {
-		return ctx.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "api route not found"})
-	})
-
 	// ISR 静态直发中间件：命中物化文件直接返回，miss 放行到业务页面与兜底
 	// 注册在内部端点之后、业务页面之前（业务页面由后续注册流程挂载）
 	s.app.Use(s.isrStore.Middleware())

@@ -15,6 +15,10 @@ func Register(a *hybrid.App) error {
 
 	registerAuthRoutes(a)
 
+	if err := registerApiRoutes(a); err != nil {
+		return err
+	}
+
 	// 静态页（ISR 物化）：公开、内容稳定，落盘后由中间件直发
 	for _, p := range []struct {
 		pattern   string
