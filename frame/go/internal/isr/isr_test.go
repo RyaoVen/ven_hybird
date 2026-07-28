@@ -179,3 +179,39 @@ func TestStoreHotPathsAndLRU(t *testing.T) {
 		t.Fatalf("expected <= 2 files after eviction, got %d", store.CountFiles(matcher))
 	}
 }
+
+func TestStoreClearAll(t *testing.T) {
+	dir := t.TempDir()
+	s := NewStore(dir, true)
+	if err := s.Materialize("/news/1", "<html>1</html>"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Materialize("/news/2", "<html>2</html>"); err != nil {
+		t.Fatal(err)
+	}
+	if cleared := s.ClearAll(); cleared != 2 {
+		t.Fatalf("expected 2 cleared, got %d", cleared)
+	}
+	if s.Exists("/news/1") || s.Exists("/news/2") {
+		t.Fatal("expected all materialized files cleared")
+	}
+	if s.AccessCount("/news/1") != 0 {
+		t.Fatal("expected access stats cleared")
+	}
+}
+
+func TestStoreClearAllDisabled(t *testing.T) {
+	dir := t.TempDir()
+	enabled := NewStore(dir, true)
+	if err := enabled.Materialize("/news/1", "<html>1</html>"); err != nil {
+		t.Fatal(err)
+	}
+	// 禁用（dev）的 Store 不清空
+	s := NewStore(dir, false)
+	if cleared := s.ClearAll(); cleared != 0 {
+		t.Fatalf("disabled store should clear nothing, got %d", cleared)
+	}
+	if !enabled.Exists("/news/1") {
+		t.Fatal("expected files kept when disabled")
+	}
+}
