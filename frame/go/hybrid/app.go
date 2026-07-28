@@ -3,8 +3,7 @@
 package hybrid
 
 import (
-	"sync"
-
+	"ven_hybird/internal/event"
 	"ven_hybird/internal/httpserver"
 )
 
@@ -14,8 +13,8 @@ type App struct {
 	pages         []page
 	loginRedirect string // 401 时的登录跳转目标
 
-	staticHandlers map[string]PageHandler // StaticPage 数据函数（按模板字符串）
-	prerenderMu    sync.Mutex             // 预渲染批次串行化
+	staticHandlers map[string]PageHandler // StaticPage 数据函数（按模板字符串；启动期注册，运行期只读）
+	bus            *event.Bus             // 变更事件总线（DataChange 唯一失效路径）
 }
 
 // defaultLoginRedirect 是默认的登录跳转路径。
@@ -23,11 +22,14 @@ const defaultLoginRedirect = "/login"
 
 // New 创建 hybrid 应用，注入已构建好的 *httpserver.Server。
 func New(server *httpserver.Server) *App {
-	return &App{
+	a := &App{
 		server:         server,
 		loginRedirect:  defaultLoginRedirect,
 		staticHandlers: make(map[string]PageHandler),
 	}
+	// 事件总线接线：① 删除走 httpserver 的 ISR 失效，② 再生走本层数据函数 + 回源渲染/落盘
+	a.bus = event.New(server.InvalidateStatic, a.renderStatic, server.MaterializeStatic)
+	return a
 }
 
 // Server 返回底层的 *httpserver.Server。

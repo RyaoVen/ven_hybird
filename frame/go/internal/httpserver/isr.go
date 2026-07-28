@@ -41,8 +41,9 @@ func (s *Server) staticDeclFor(path string) (*isr.Declaration, map[string]string
 	return nil, nil
 }
 
-// InvalidateStatic 执行 DataChange 的删除阶段：
+// InvalidateStatic 是事件总线 ① 删除阶段的实现：
 // 构造匹配器 → 删除物化文件 → 同步清内存缓存 → 返回删除路径与 smartLoad 热门路径（删除前统计）。
+// 由事件总线在静默窗口后调用，不再被 DataChange 直接同步触发。
 func (s *Server) InvalidateStatic(template string, params []string) (deleted, hot []string, err error) {
 	decl, ok := s.staticDecls[template]
 	if !ok {
@@ -67,16 +68,22 @@ func (s *Server) InvalidateStatic(template string, params []string) (deleted, ho
 	return deleted, hot, nil
 }
 
-// RenderStaticPath 渲染具体路径并物化（后台预渲染/懒再生共用，不走页面缓存直回源）。
-func (s *Server) RenderStaticPath(path string, data any) error {
+// RenderStaticHTML 回源渲染具体路径并返回 HTML（不落盘，不走页面缓存直回源）。
+// 事件总线 ② 再生阶段用：渲染与落盘分离，落盘前由总线做跨代（stale）检查。
+func (s *Server) RenderStaticHTML(path string, data any) (string, error) {
 	entry, err := s.renderRoute(path, map[string]string{}, data)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if entry == nil || entry.HTML == "" {
-		return fmt.Errorf("render %s returned empty html", path)
+		return "", fmt.Errorf("render %s returned empty html", path)
 	}
-	return s.materialize(path, entry.HTML)
+	return entry.HTML, nil
+}
+
+// MaterializeStatic 落盘物化文件并按声明治理上限（事件总线 ② 落盘阶段用）。
+func (s *Server) MaterializeStatic(path string, html string) error {
+	return s.materialize(path, html)
 }
 
 // materialize 落盘并按声明治理上限；未声明路径直接跳过。
