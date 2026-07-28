@@ -31,11 +31,14 @@ func isDataOnly(ctx *fiber.Ctx) bool {
 }
 
 // Page 注册一个页面路由（GET + HEAD）。
-// 注册流程：校验 pattern → 解析 role 为 AuthLevels → 在 fiber 上注册路由；失败返回 error。
+// 注册流程：/api 前缀检查 → 校验 pattern → 解析 role 为 AuthLevels → 在 fiber 上注册路由；失败返回 error。
 // 请求处理流程：（有 role 要求时）cookie 鉴权 + 权限校验 → 执行 handler → 截流 JSON → 按请求头决定 SSR/JSON。
 // role 为空的页面默认公开，不做任何鉴权。
 // 鉴权失败：data-only 返回 401/403 裸 JSON；HTML 导航 401 跳登录页、403 原地渲染错误页。
 func (a *App) Page(pattern string, role []string, h PageHandler) error {
+	if err := checkPagePatternAllowed(pattern); err != nil {
+		return err
+	}
 	if err := a.server.ValidatePagePattern(pattern); err != nil {
 		return fmt.Errorf("hybrid: page pattern %q invalid: %w", pattern, err)
 	}
@@ -49,27 +52,22 @@ func (a *App) Page(pattern string, role []string, h PageHandler) error {
 
 	handler := func(ctx *fiber.Ctx) error {
 		// 1. 鉴权：仅当页面有 role 要求时执行，公开页面直接放行
-		if len(levels) > 0 {
-			userRole, ok := a.server.CookieAuth(ctx)
-			if !ok {
-				log.Printf("auth: denied %s %s reason=unauthenticated pattern=%s", ctx.Method(), ctx.Path(), pattern)
-				if isDataOnly(ctx) {
+		userRole, status, reason := a.authCheck(ctx, levels)
+		if status != fiber.StatusOK {
+			log.Printf("auth: denied %s %s reason=%s role=%s pattern=%s", ctx.Method(), ctx.Path(), reason, userRole, pattern)
+			if isDataOnly(ctx) {
+				if status == fiber.StatusUnauthorized {
 					ctx.Set(loginPathHeader, a.loginRedirect)
-					return ctx.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
 				}
+				return ctx.Status(status).JSON(fiber.Map{"error": reason})
+			}
+			if status == fiber.StatusUnauthorized {
 				// HTML 导航：302 跳登录页，next 为原始路径（含 query）
 				return ctx.Redirect(a.loginRedirect+"?next="+url.QueryEscape(ctx.OriginalURL()), fiber.StatusFound)
 			}
-			allowed, err := a.server.CheckAuth(userRole, levels)
-			if err != nil || !allowed {
-				log.Printf("auth: denied %s %s reason=forbidden role=%s pattern=%s", ctx.Method(), ctx.Path(), userRole, pattern)
-				if isDataOnly(ctx) {
-					return ctx.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "forbidden"})
-				}
-				// HTML 导航：原地渲染 403 错误页（URL 不跳转）
-				ctx.Status(fiber.StatusForbidden)
-				return a.server.RenderPageAs(ctx, forbiddenPageRoute, nil)
-			}
+			// HTML 导航：原地渲染 403 错误页（URL 不跳转）
+			ctx.Status(fiber.StatusForbidden)
+			return a.server.RenderPageAs(ctx, forbiddenPageRoute, nil)
 		}
 
 		// 2. 执行用户 handler
