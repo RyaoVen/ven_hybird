@@ -25,9 +25,11 @@ Node SSR Worker :3000  ─── 仅内部访问
 
 **核心流程**：Go 启动时从 Node 拉取页面路由模式列表 → 注册业务页面路由 → 请求到达时 cookie 鉴权 → 权限校验 → 执行 handler 拿到数据 → 查页面缓存（命中直接返回 HTML，不回 Node）→ 提交 SSR 渲染并回填缓存 → 返回 HTML 或 JSON。
 
-**页面缓存**：SSR HTML 在 Go 端按 `路径 + 规范化 query + 数据指纹` 缓存（内存实现，1 分钟 TTL，上限 1000 条），相同请求并发时防击穿只回源一次。仅缓存成功渲染（404/502/504 不缓存）。业务数据变更后调 `app.InvalidatePage(path)` 手动失效；存储后端是 `pagecache.Backend` 接口，预留 Redis 切换。
+**页面缓存**：SSR HTML 在 Go 端按 `路径 + 规范化 query + 数据指纹` 缓存（默认内存实现，1 分钟 TTL，上限 1000 条），相同请求并发时防击穿只回源一次。仅缓存成功渲染（404/502/504 不缓存）。业务数据变更后调 `app.InvalidatePage(path)` 手动失效；配置 `VEN_REDIS_ADDR` 后会话与页面缓存切换为 Redis 后端（跨实例共享，未配置时行为不变）。
 
-**静态页 ISR**：`app.StaticPage(pattern, maxPages, smartLoad, handler)` 声明的公开页面，SSR 产物物化到 `VEN_ISR_DIR`（默认 `./isr-pages`），之后由中间件直接发文件（不再回 Node）。失效靠业务显式声明 `app.DataChange(pattern, ...params)`——不给参数全局失效、给满局部单页、给一部分子树（支持 `/user/blog/:id` 多层动态），删除文件与内存缓存并写日志。`smartLoad` 开启时全局更新按访问热度预重渲染 Top-N；关闭且设上限时按 LRU 懒删除。query 不参与 ISR；`VEN_ISR_ENABLED=false` 可整体关闭（dev 用）。
+**静态页 ISR**：`app.StaticPage(pattern, maxPages, smartLoad, handler)` 声明的公开页面，SSR 产物物化到 `VEN_ISR_DIR`（默认 `./isr-pages`），之后由中间件直接发文件（不再回 Node）。失效靠业务显式声明 `app.DataChange(pattern, ...params)`——不给参数全局失效、给满局部单页、给一部分子树（支持 `/user/blog/:id` 多层动态）。`DataChange` 永远异步即时返回：事件总线在静默窗口（5s，持续变更最多等 30s）后合批，先删物化文件与内存缓存、再由 smartLoad 声明按访问热度后台再生 Top-N（关闭且设上限时按 LRU 懒删除）。服务重启清空 ISR 目录重新物化。query 不参与 ISR；`VEN_ISR_ENABLED=false` 可整体关闭（dev 用）。
+
+**集群部署**：多实例 = 单实例行为 + Redis 两类共享（会话/页面缓存 KV、DataChange 事件 Pub/Sub 广播），Go↔Node 1:1 配对，ISR 目录各实例自持。详见 [docs/cluster.md](docs/cluster.md)。
 
 **日志**：统一请求日志（方法/路径/状态/耗时）、渲染事件日志（缓存 hit/miss/shared、Node 耗时）、鉴权拒绝日志（401/403 含角色与页面）；`/healthz` 暴露缓存命中/回源/共享计数。
 
@@ -50,6 +52,10 @@ ven_hybird/
 │   │   └── internal/
 │   │       ├── httpserver/     #   Fiber 服务器、路由、SSR 代理
 │   │       ├── auth/           #   权限等级注册表、cookie 鉴权
+│   │       ├── pagecache/      #   页面缓存（Backend 接口 + 内存实现）
+│   │       ├── isr/            #   ISR 文件层（落盘、直发、匹配器）
+│   │       ├── event/          #   变更事件总线（debounce、先删后渲）
+│   │       ├── redis/          #   Redis 后端与事件传输（集群可选）
 │   │       ├── pagepattern/    #   页面 pattern 校验器
 │   │       ├── ssr/            #   SSR 客户端、pending 注册中心、HookID
 │   │       └── config/         #   环境变量配置加载
