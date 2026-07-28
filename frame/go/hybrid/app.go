@@ -27,8 +27,12 @@ func New(server *httpserver.Server) *App {
 		loginRedirect:  defaultLoginRedirect,
 		staticHandlers: make(map[string]PageHandler),
 	}
-	// 事件总线接线：① 删除走 httpserver 的 ISR 失效，② 再生走本层数据函数 + 回源渲染/落盘
+	// 事件总线接线：① 删除走 httpserver 的 ISR 失效，② 再生走本层数据函数 + 回源渲染/落盘；
+	// 配置了 Redis 时接入跨实例传输（DataChange 广播到全部实例，各实例独立走本地总线）
 	a.bus = event.New(server.InvalidateStatic, a.renderStatic, server.MaterializeStatic)
+	if transport := server.EventTransport(); transport != nil {
+		a.bus.SetTransport(transport)
+	}
 	return a
 }
 

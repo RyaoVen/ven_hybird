@@ -246,3 +246,76 @@ func TestBus_StaleRenderDropped(t *testing.T) {
 		t.Fatalf("expected 2 invalidates (N and N+1), got %d", len(invalidates))
 	}
 }
+
+// fakeTransport 记录广播事件，订阅 handler 由测试手动触发（模拟回声）。
+type fakeTransport struct {
+	mu        sync.Mutex
+	published []ChangeEvent
+	handler   func(ChangeEvent)
+}
+
+func (f *fakeTransport) Publish(ev ChangeEvent) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.published = append(f.published, ev)
+	return nil
+}
+
+func (f *fakeTransport) Subscribe(h func(ChangeEvent)) {
+	f.handler = h
+}
+
+func (f *fakeTransport) publishCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.published)
+}
+
+func TestBus_EnqueuePublishes(t *testing.T) {
+	calls := &callLog{}
+	b := newTestBus(calls)
+	defer b.Stop()
+	b.QuietWindow = 50 * time.Millisecond
+	transport := &fakeTransport{}
+	b.SetTransport(transport)
+
+	b.Enqueue(ev("/news/:id", "1"))
+	if got := transport.publishCount(); got != 1 {
+		t.Fatalf("expected 1 published event, got %d", got)
+	}
+	// 本地照常处理
+	waitFor(t, "local flush", func() bool { return calls.invalidateCount() == 1 }, 2*time.Second)
+}
+
+func TestBus_ReceiveDoesNotRepublish(t *testing.T) {
+	calls := &callLog{}
+	b := newTestBus(calls)
+	defer b.Stop()
+	b.QuietWindow = 50 * time.Millisecond
+	transport := &fakeTransport{}
+	b.SetTransport(transport)
+
+	// 其他实例广播来的事件：只本地入队，不转播（防回声循环）
+	transport.handler(ev("/news/:id", "1"))
+	waitFor(t, "flush from received event", func() bool { return calls.invalidateCount() == 1 }, 2*time.Second)
+	if got := transport.publishCount(); got != 0 {
+		t.Fatalf("received event must not be republished, got %d publishes", got)
+	}
+}
+
+func TestBus_EchoDedup(t *testing.T) {
+	calls := &callLog{}
+	b := newTestBus(calls)
+	defer b.Stop()
+	b.QuietWindow = 100 * time.Millisecond
+	transport := &fakeTransport{}
+	b.SetTransport(transport)
+
+	b.Enqueue(ev("/news/:id", "1"))
+	transport.handler(ev("/news/:id", "1")) // 自己发出的事件绕一圈回来
+	waitFor(t, "flush", func() bool { return calls.invalidateCount() > 0 }, 2*time.Second)
+	time.Sleep(100 * time.Millisecond) // 观察窗口内不得有第二次处理
+	if got := calls.invalidateCount(); got != 1 {
+		t.Fatalf("echo should be deduped into one processing round, got %d", got)
+	}
+}

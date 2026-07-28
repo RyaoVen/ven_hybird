@@ -51,6 +51,16 @@ type regenTask struct {
 	epoch    uint64
 }
 
+// Transport 是事件跨实例传输抽象（集群部署用；单实例无 Transport，现状不变）。
+// 实现允许丢消息（如 Redis Pub/Sub）：变更事件本质是敦促更新，
+// 丢失的实例靠下次变更或重启重载自然收敛。
+type Transport interface {
+	// Publish 向其他实例广播一次变更。
+	Publish(ev ChangeEvent) error
+	// Subscribe 订阅其他实例的变更（实现内部起 goroutine，随进程生命周期）。
+	Subscribe(handler func(ev ChangeEvent))
+}
+
 // Bus 是进程内变更事件总线：单队列 + 消费循环 + 单再生 worker。
 type Bus struct {
 	// QuietWindow 是静默窗口（入队后无新变更则 flush）。可在启动期调整（测试用）。
@@ -61,6 +71,8 @@ type Bus struct {
 	invalidate  InvalidateFunc
 	render      RenderFunc
 	materialize MaterializeFunc
+
+	transport Transport // 跨实例传输（nil = 单实例；启动期 SetTransport 接线，之后只读）
 
 	mu      sync.Mutex            // 保护 pending/firstAt/lastAt
 	pending map[string]*ChangeEvent // 待处理批次（key = pattern + params，map 去重）
@@ -100,10 +112,35 @@ func (b *Bus) Stop() {
 	close(b.stop)
 }
 
-// Enqueue 异步入队一次变更，永不阻塞调用方。
+// SetTransport 接入跨实例传输（启动期调用一次，之后只读）：
+// 此后 Enqueue 本地入队同时广播；订阅到的事件经 Receive 只本地入队不转播。
+func (b *Bus) SetTransport(t Transport) {
+	b.transport = t
+	t.Subscribe(b.Receive)
+}
+
+// Enqueue 异步入队一次变更，永不阻塞调用方；接入 Transport 后同步广播到其他实例
+// （广播失败仅记日志——允许丢，接收方靠下次变更或重启重载收敛）。
 // 同批内范围重叠的事件在此去重：同 pattern 下 params 前缀即范围包含
 // （左到右连续填充语义），宽范围吞并窄范围，同页一轮只处理一次。
 func (b *Bus) Enqueue(ev ChangeEvent) {
+	b.enqueue(ev)
+	if b.transport != nil {
+		if err := b.transport.Publish(ev); err != nil {
+			log.Printf("event: publish %s params=%v failed: %v", ev.Pattern, ev.Params, err)
+		}
+	}
+}
+
+// Receive 是订阅入口：其他实例广播来的事件只本地入队，不再转播。
+// 防回声：本实例发出的事件绕一圈回来时，落进同批窗口被 map 去重吞掉；
+// 即使漏网，删除与再生都是幂等操作。
+func (b *Bus) Receive(ev ChangeEvent) {
+	b.enqueue(ev)
+}
+
+// enqueue 本地入队（去重 + debounce 计时）。
+func (b *Bus) enqueue(ev ChangeEvent) {
 	ev.Params = append([]string(nil), ev.Params...)
 	key := ev.Pattern + "\x00" + strings.Join(ev.Params, "\x00")
 

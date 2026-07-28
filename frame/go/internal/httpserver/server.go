@@ -9,6 +9,7 @@ import (
 
 	"ven_hybird/internal/auth"
 	"ven_hybird/internal/config"
+	"ven_hybird/internal/event"
 	"ven_hybird/internal/isr"
 	"ven_hybird/internal/pagecache"
 	"ven_hybird/internal/pagepattern"
@@ -29,6 +30,8 @@ type Server struct {
 	sessions  *auth.SessionStore   // 会话存储（token → role）
 	pageCache *pagecache.Store     // 页面渲染结果缓存
 	isrStore  *isr.Store           // ISR 文件层
+
+	eventTransport event.Transport // 事件跨实例传输（nil = 单实例；Redis 配置后由 hybrid 挂到事件总线）
 
 	patternMu   sync.RWMutex           // 保护 patterns 指针（校验失败重拉时换入新校验器）
 	patterns    *pagepattern.Validator // 页面 pattern 校验器
@@ -67,6 +70,7 @@ func New(
 	// 会话/页面缓存后端：配置 Redis 则跨实例共享，连接失败回退内存（fail-open）
 	sessionBackend := auth.Backend(auth.NewMemoryBackend())
 	pageBackend := pagecache.Backend(pagecache.NewMemoryBackend(pageCacheCapacity))
+	var eventTransport event.Transport
 	if cfg.RedisAddr != "" {
 		if redisClient, err := redis.NewClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB); err != nil {
 			log.Printf("redis: connect failed, fallback to memory backends: %v", err)
@@ -74,21 +78,23 @@ func New(
 			log.Printf("redis: session/page cache backends connected (%s db=%d)", cfg.RedisAddr, cfg.RedisDB)
 			sessionBackend = redis.NewSessionBackend(redisClient)
 			pageBackend = redis.NewPageBackend(redisClient)
+			eventTransport = redis.NewEventTransport(redisClient)
 		}
 	}
 
 	return &Server{
-		app:         app,
-		config:      cfg,
-		ssr:         client,
-		pending:     pending,
-		hookIDs:     hookIDs,
-		auth:        auth.NewRegistry(),
-		sessions:    auth.NewSessionStore(sessionBackend, sessionTTL),
-		patterns:    patterns,
-		pageCache:   pagecache.NewStore(pageBackend, pageCacheTTL),
-		isrStore:    isr.NewStore(cfg.IsrDir, cfg.IsrEnabled),
-		staticDecls: make(map[string]*isr.Declaration),
+		app:            app,
+		config:         cfg,
+		ssr:            client,
+		pending:        pending,
+		hookIDs:        hookIDs,
+		auth:           auth.NewRegistry(),
+		sessions:       auth.NewSessionStore(sessionBackend, sessionTTL),
+		patterns:       patterns,
+		pageCache:      pagecache.NewStore(pageBackend, pageCacheTTL),
+		isrStore:       isr.NewStore(cfg.IsrDir, cfg.IsrEnabled),
+		eventTransport: eventTransport,
+		staticDecls:    make(map[string]*isr.Declaration),
 	}
 }
 
@@ -190,4 +196,9 @@ func (s *Server) CheckAuth(role string, pageLevels []int64) (bool, error) {
 // App 返回底层的 Fiber 应用实例。
 func (s *Server) App() *fiber.App {
 	return s.app
+}
+
+// EventTransport 返回事件跨实例传输（未配置 Redis 时为 nil，hybrid 接线事件总线用）。
+func (s *Server) EventTransport() event.Transport {
+	return s.eventTransport
 }
