@@ -3,6 +3,8 @@
 package hybrid
 
 import (
+	"sync"
+
 	"ven_hybird/internal/httpserver"
 )
 
@@ -11,6 +13,9 @@ type App struct {
 	server        *httpserver.Server
 	pages         []page
 	loginRedirect string // 401 时的登录跳转目标
+
+	staticHandlers map[string]PageHandler // StaticPage 数据函数（按模板字符串）
+	prerenderMu    sync.Mutex             // 预渲染批次串行化
 }
 
 // defaultLoginRedirect 是默认的登录跳转路径。
@@ -19,8 +24,9 @@ const defaultLoginRedirect = "/login"
 // New 创建 hybrid 应用，注入已构建好的 *httpserver.Server。
 func New(server *httpserver.Server) *App {
 	return &App{
-		server:        server,
-		loginRedirect: defaultLoginRedirect,
+		server:         server,
+		loginRedirect:  defaultLoginRedirect,
+		staticHandlers: make(map[string]PageHandler),
 	}
 }
 

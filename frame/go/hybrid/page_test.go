@@ -32,20 +32,22 @@ type fakeHookIDs struct{}
 
 func (fakeHookIDs) New() (string, error) { return "hook-test", nil }
 
-func setupTestApp() (*App, *fakeSSRClient, *ssr.PendingRegistry, *httpserver.Server) {
+func setupTestApp(t *testing.T) (*App, *fakeSSRClient, *ssr.PendingRegistry, *httpserver.Server) {
 	cfg := config.Config{
 		NodeSubmitTimeout: 5 * time.Second,
 		RenderTimeout:     10 * time.Second,
 	}
 	client := &fakeSSRClient{submitted: make(chan ssr.RenderTask, 1)}
 	pending := ssr.NewPendingRegistry(10)
-	patterns := pagepattern.NewValidator([]string{"/test/:id", "/ssr/:name", "/admin/:id"})
+	patterns := pagepattern.NewValidator([]string{"/test/:id", "/ssr/:name", "/admin/:id", "/news/:id"})
+	cfg.IsrDir = t.TempDir()
+	cfg.IsrEnabled = true
 	server := httpserver.New(cfg, client, pending, fakeHookIDs{}, patterns)
 	return New(server), client, pending, server
 }
 
 func TestPage_DataOnly(t *testing.T) {
-	app, _, _, _ := setupTestApp()
+	app, _, _, _ := setupTestApp(t)
 	mustPage(t, app, "/test/:id", nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"id": c.Param("id")})
 	})
@@ -67,7 +69,7 @@ func TestPage_DataOnly(t *testing.T) {
 
 func TestPage_PublicSkipsCookieAuth(t *testing.T) {
 	// 无 cookie 时公开页面仍应放行
-	app, _, _, _ := setupTestApp()
+	app, _, _, _ := setupTestApp(t)
 	mustPage(t, app, "/test/:id", nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"id": c.Param("id")})
 	})
@@ -85,7 +87,7 @@ func TestPage_PublicSkipsCookieAuth(t *testing.T) {
 
 func TestPage_ProtectedRequiresCookieAuth(t *testing.T) {
 	// 无 cookie 访问有 role 要求的页面应返回 401
-	app, _, _, _ := setupTestApp()
+	app, _, _, _ := setupTestApp(t)
 	if err := app.RegisterRole("admin", nil); err != nil {
 		t.Fatalf("register role failed: %v", err)
 	}
@@ -108,7 +110,7 @@ func TestPage_ProtectedRequiresCookieAuth(t *testing.T) {
 }
 
 func TestPage_GrantAuthFlow(t *testing.T) {
-	app, _, _, server := setupTestApp()
+	app, _, _, server := setupTestApp(t)
 	if err := app.RegisterRole("admin", nil); err != nil {
 		t.Fatalf("register role failed: %v", err)
 	}
@@ -183,7 +185,7 @@ func TestPage_GrantAuthFlow(t *testing.T) {
 }
 
 func TestPage_SSR(t *testing.T) {
-	app, client, pending, _ := setupTestApp()
+	app, client, pending, _ := setupTestApp(t)
 	mustPage(t, app, "/ssr/:name", nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"name": c.Param("name")})
 	})
@@ -246,7 +248,7 @@ func expectNoTask(t *testing.T, client *fakeSSRClient, window time.Duration) {
 }
 
 func TestPage_CacheHit(t *testing.T) {
-	app, client, pending, _ := setupTestApp()
+	app, client, pending, _ := setupTestApp(t)
 	mustPage(t, app, "/ssr/:name", nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"name": c.Param("name")})
 	})
@@ -272,7 +274,7 @@ func TestPage_CacheHit(t *testing.T) {
 }
 
 func TestPage_CacheDataVariation(t *testing.T) {
-	app, client, pending, _ := setupTestApp()
+	app, client, pending, _ := setupTestApp(t)
 	// data 随 query 变化 → 不同 key → 每次都回源
 	mustPage(t, app, "/ssr/:name", nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"q": c.Query("q")})
@@ -299,7 +301,7 @@ func TestPage_CacheDataVariation(t *testing.T) {
 }
 
 func TestPage_CacheSkips404(t *testing.T) {
-	app, client, pending, _ := setupTestApp()
+	app, client, pending, _ := setupTestApp(t)
 	mustPage(t, app, "/ssr/:name", nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"name": c.Param("name")})
 	})
@@ -321,7 +323,7 @@ func TestPage_CacheSkips404(t *testing.T) {
 }
 
 func TestPage_InvalidatePage(t *testing.T) {
-	app, client, pending, _ := setupTestApp()
+	app, client, pending, _ := setupTestApp(t)
 	mustPage(t, app, "/ssr/:name", nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"name": c.Param("name")})
 	})
@@ -345,7 +347,7 @@ func TestPage_InvalidatePage(t *testing.T) {
 }
 
 func TestPage_CacheSingleFlight(t *testing.T) {
-	app, client, pending, _ := setupTestApp()
+	app, client, pending, _ := setupTestApp(t)
 	mustPage(t, app, "/ssr/:name", nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"name": c.Param("name")})
 	})
@@ -381,7 +383,7 @@ func TestPage_CacheSingleFlight(t *testing.T) {
 // setupGuardTestApp 注册 admin/guest 角色与受保护页面，并提供 guest 登录端点。
 func setupGuardTestApp(t *testing.T) (*App, *fakeSSRClient, *ssr.PendingRegistry, *httpserver.Server) {
 	t.Helper()
-	app, client, pending, server := setupTestApp()
+	app, client, pending, server := setupTestApp(t)
 	if err := app.RegisterRole("guest", nil); err != nil {
 		t.Fatalf("register guest failed: %v", err)
 	}
@@ -523,7 +525,7 @@ func mustPage(t *testing.T, app *App, pattern string, roles []string, h PageHand
 }
 
 func TestPage_InvalidPatternReturnsError(t *testing.T) {
-	app, _, _, _ := setupTestApp()
+	app, _, _, _ := setupTestApp(t)
 	// "/not-registered" 不在测试 validator 的 pattern 列表里
 	if err := app.Page("/not-registered", nil, func(c *PageCtx) error { return nil }); err == nil {
 		t.Fatal("expected error for unregistered pattern, got nil")
@@ -531,7 +533,7 @@ func TestPage_InvalidPatternReturnsError(t *testing.T) {
 }
 
 func TestPage_HeadRequest(t *testing.T) {
-	app, _, _, _ := setupTestApp()
+	app, _, _, _ := setupTestApp(t)
 	mustPage(t, app, "/test/:id", nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"id": c.Param("id")})
 	})

@@ -17,6 +17,8 @@ type Config struct {
 	InternalToken     string        // 内部认证令牌，环境变量: VEN_INTERNAL_TOKEN
 	MaxPendingRenders int           // 最大并发 pending 数，环境变量: VEN_MAX_PENDING_RENDERS
 	AssetsDir         string        // 静态资源目录，环境变量: VEN_ASSETS_DIR
+	IsrDir            string        // ISR 物化文件目录，环境变量: VEN_ISR_DIR
+	IsrEnabled        bool          // 是否启用 ISR（dev 置 false），环境变量: VEN_ISR_ENABLED
 }
 
 // Load 从环境变量加载配置并校验合法性。
@@ -29,6 +31,8 @@ func Load() (Config, error) {
 		InternalToken:     getenv("VEN_INTERNAL_TOKEN", "development-token"),
 		MaxPendingRenders: integer("VEN_MAX_PENDING_RENDERS", 100),
 		AssetsDir:         getenv("VEN_ASSETS_DIR", "../node/build"),
+		IsrDir:            getenv("VEN_ISR_DIR", "./isr-pages"),
+		IsrEnabled:        boolean("VEN_ISR_ENABLED", true),
 	}
 
 	// 业务规则校验：渲染总超时必须大于任务提交超时，
@@ -76,4 +80,13 @@ func integer(key string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+// boolean 从环境变量解析布尔值（"false"/"0" 为 false，其余非空为 true）。
+func boolean(key string, fallback bool) bool {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	return value != "false" && value != "0"
 }
