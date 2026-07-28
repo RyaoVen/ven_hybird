@@ -19,6 +19,9 @@ type Config struct {
 	AssetsDir         string        // 静态资源目录，环境变量: VEN_ASSETS_DIR
 	IsrDir            string        // ISR 物化文件目录，环境变量: VEN_ISR_DIR
 	IsrEnabled        bool          // 是否启用 ISR（dev 置 false），环境变量: VEN_ISR_ENABLED
+	RedisAddr         string        // Redis 地址（空 = 关闭，回退内存实现），环境变量: VEN_REDIS_ADDR
+	RedisPassword     string        // Redis 密码，环境变量: VEN_REDIS_PASSWORD
+	RedisDB           int           // Redis 数据库编号，环境变量: VEN_REDIS_DB
 }
 
 // Load 从环境变量加载配置并校验合法性。
@@ -33,6 +36,9 @@ func Load() (Config, error) {
 		AssetsDir:         getenv("VEN_ASSETS_DIR", "../node/build"),
 		IsrDir:            getenv("VEN_ISR_DIR", "./isr-pages"),
 		IsrEnabled:        boolean("VEN_ISR_ENABLED", true),
+		RedisAddr:         getenv("VEN_REDIS_ADDR", ""),
+		RedisPassword:     getenv("VEN_REDIS_PASSWORD", ""),
+		RedisDB:           integer("VEN_REDIS_DB", 0),
 	}
 
 	// 业务规则校验：渲染总超时必须大于任务提交超时，

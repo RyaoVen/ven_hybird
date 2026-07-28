@@ -12,6 +12,7 @@ import (
 	"ven_hybird/internal/isr"
 	"ven_hybird/internal/pagecache"
 	"ven_hybird/internal/pagepattern"
+	"ven_hybird/internal/redis"
 	"ven_hybird/internal/ssr"
 
 	"github.com/gofiber/fiber/v2"
@@ -63,6 +64,19 @@ func New(
 	})
 	app.Use(requestLogger())
 
+	// 会话/页面缓存后端：配置 Redis 则跨实例共享，连接失败回退内存（fail-open）
+	sessionBackend := auth.Backend(auth.NewMemoryBackend())
+	pageBackend := pagecache.Backend(pagecache.NewMemoryBackend(pageCacheCapacity))
+	if cfg.RedisAddr != "" {
+		if redisClient, err := redis.NewClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB); err != nil {
+			log.Printf("redis: connect failed, fallback to memory backends: %v", err)
+		} else {
+			log.Printf("redis: session/page cache backends connected (%s db=%d)", cfg.RedisAddr, cfg.RedisDB)
+			sessionBackend = redis.NewSessionBackend(redisClient)
+			pageBackend = redis.NewPageBackend(redisClient)
+		}
+	}
+
 	return &Server{
 		app:         app,
 		config:      cfg,
@@ -70,9 +84,9 @@ func New(
 		pending:     pending,
 		hookIDs:     hookIDs,
 		auth:        auth.NewRegistry(),
-		sessions:    auth.NewSessionStore(auth.NewMemoryBackend(), sessionTTL),
+		sessions:    auth.NewSessionStore(sessionBackend, sessionTTL),
 		patterns:    patterns,
-		pageCache:   pagecache.NewStore(pagecache.NewMemoryBackend(pageCacheCapacity), pageCacheTTL),
+		pageCache:   pagecache.NewStore(pageBackend, pageCacheTTL),
 		isrStore:    isr.NewStore(cfg.IsrDir, cfg.IsrEnabled),
 		staticDecls: make(map[string]*isr.Declaration),
 	}
