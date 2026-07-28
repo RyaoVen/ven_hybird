@@ -2,8 +2,11 @@
 package hybrid
 
 import (
+	"fmt"
 	"log"
+	"time"
 
+	"ven_hybird/internal/event"
 	"ven_hybird/internal/isr"
 
 	"github.com/gofiber/fiber/v2"
@@ -51,47 +54,48 @@ func (a *App) StaticPage(dynamicUrl string, maxPages int, smartLoad bool, h Page
 // DataChange 显式声明数据变更：使受影响页面失效。
 // pattern 必须是已注册的 StaticPage 模式；params 按动态段从左到右连续填充——
 // 不给 = 全局页更新（整个模式失效），给满 = 局部单页，给一部分 = 子树。
-// 删除文件与内存缓存后写日志；smartLoad 声明在全局更新时异步按热门预重渲染。
+//
+// 语义：同步校验后永远异步入队到事件总线，即时返回，不阻塞调用方。
+// 总线在静默窗口（默认 5s，持续变更最多等 30s）后合批处理：
+// 先删物化文件与内存缓存，再由 smartLoad 声明按热门后台再生落盘；
+// 未再生的页面下次访问时懒回源。
 func (a *App) DataChange(pattern string, params ...string) error {
-	_, hot, err := a.server.InvalidateStatic(pattern, params)
-	if err != nil {
+	decl := a.server.StaticDecl(pattern)
+	if decl == nil {
+		return fmt.Errorf("static page not declared: %s", pattern)
+	}
+	if _, err := decl.BuildMatcher(params); err != nil {
 		return err
 	}
-	if len(hot) > 0 {
-		go a.prerenderHot(pattern, hot)
-	}
+	a.bus.Enqueue(event.ChangeEvent{Pattern: pattern, Params: params, EnqueuedAt: time.Now()})
 	return nil
 }
 
-// prerenderHot 串行预重渲染热门路径（单批次互斥，异步执行）。
-func (a *App) prerenderHot(template string, paths []string) {
-	a.prerenderMu.Lock()
-	defer a.prerenderMu.Unlock()
-
+// renderStatic 是事件总线 ② 再生阶段的回源渲染：
+// 执行数据函数取数 → SSR 渲染 → 返回 HTML（不落盘；落盘由总线经跨代检查后执行）。
+// ok=false 表示跳过（handler 失败、NotFound 或渲染失败），页面留待访问时懒回源。
+func (a *App) renderStatic(template string, path string) (string, bool) {
 	decl := a.server.StaticDecl(template)
 	handler := a.staticHandlers[template]
 	if decl == nil || handler == nil {
-		return
+		return "", false
 	}
-	rendered := 0
-	for _, path := range paths {
-		params, ok := decl.Match(path)
-		if !ok {
-			continue
-		}
-		c := newStaticPageCtx(params, map[string]string{})
-		if err := handler(c); err != nil {
-			log.Printf("isr: prerender %s handler failed: %v", path, err)
-			continue
-		}
-		if c.responded {
-			continue // handler 判定 NotFound，跳过
-		}
-		if err := a.server.RenderStaticPath(path, c.data); err != nil {
-			log.Printf("isr: prerender %s failed: %v", path, err)
-			continue
-		}
-		rendered++
+	params, ok := decl.Match(path)
+	if !ok {
+		return "", false
 	}
-	log.Printf("isr: pre-rendered %d/%d hot pages for %s", rendered, len(paths), template)
+	c := newStaticPageCtx(params, map[string]string{})
+	if err := handler(c); err != nil {
+		log.Printf("isr: regen %s handler failed: %v", path, err)
+		return "", false
+	}
+	if c.responded {
+		return "", false // handler 判定 NotFound，跳过
+	}
+	html, err := a.server.RenderStaticHTML(path, c.data)
+	if err != nil {
+		log.Printf("isr: regen %s render failed: %v", path, err)
+		return "", false
+	}
+	return html, true
 }
