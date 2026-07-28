@@ -1,6 +1,10 @@
 # VenHybird
 
-Go + Node 混合渲染框架。Go 负责网关与数据层，Node 负责页面路由与 SSR 渲染，首屏 SSR 直出后由 SPA 接管。
+Go（Fiber）网关 + Node SSR Worker 的混合渲染框架。后端取 Spring 思想（声明式注册、AOP 式织入、显式声明失效），前端取 Next 思想（文件路由、SSR、ISR）；首屏 SSR 直出后由内置 SPA router 接管。
+
+- **Node 是页面路由唯一真相源**：`src/**/page.tsx` 即路由（`[id]` → `:id`，支持多层动态），Go 启动时拉取校验
+- **hybrid / internal / build 三层分离**：业务只接触 hybrid 胶水层的少量 API，internal 永不暴露
+- **单实例到集群零改造**：不配 Redis 是内存单实例；配上 Redis 即成集群（见 [docs/cluster.md](docs/cluster.md)）
 
 ## 架构
 
@@ -9,29 +13,139 @@ Browser
   │
   ▼
 Go Fiber :8080  ─── 唯一公网入口
-  ├─ /assets/*           静态资源
-  ├─ /_internal/*        内部端点（渲染回调、健康检查）
-  ├─ /auth/*             鉴权端点
-  ├─ /home, /about ...   业务页面（hybrid 注册，带鉴权 + SSR/JSON 双模式）
-  └─ /*                  兜底 SSR（未注册的页面走默认渲染）
+  ├─ /assets/*                  静态资源（VEN_ASSETS_DIR）
+  ├─ /_internal/render-callback 渲染回调（Node → Go，内部令牌校验）
+  ├─ /healthz                   健康检查 + 缓存计数
+  ├─ ISR 直发中间件              命中物化文件直接返回（不执行业务 handler）
+  ├─ 业务页面 /api/* /auth/*     hybrid 注册（鉴权 + SSR/JSON）
+  └─ /*                         兜底 SSR（未注册路径走默认渲染）
        │
-       │ POST /render (async, 202)
+       │ POST /render（异步，202 Accepted）
        ▼
 Node SSR Worker :3000  ─── 仅内部访问
-  ├─ GET /pages          返回全部页面路由模式（Go 启动时拉取校验）
+  ├─ GET /pages          返回全部页面路由模式（Go 启动时拉取）
   ├─ POST /render        接收渲染任务，React SSR → 回调 Go
   └─ src/**/page.tsx     页面路由（唯一真相源）
 ```
 
-**核心流程**：Go 启动时从 Node 拉取页面路由模式列表 → 注册业务页面路由 → 请求到达时 cookie 鉴权 → 权限校验 → 执行 handler 拿到数据 → 查页面缓存（命中直接返回 HTML，不回 Node）→ 提交 SSR 渲染并回填缓存 → 返回 HTML 或 JSON。
+**渲染协议**：Go 提交渲染任务（202 异步接受），Node 渲染完 POST 回调；Go 侧 pending registry 按 hookID 匹配等待中的请求，超时/失败映射为 404/502/504。SSR bundle external 了 react/react-dom（与渲染器保持同一份 React）。
 
-**页面缓存**：SSR HTML 在 Go 端按 `路径 + 规范化 query + 数据指纹` 缓存（默认内存实现，1 分钟 TTL，上限 1000 条），相同请求并发时防击穿只回源一次。仅缓存成功渲染（404/502/504 不缓存）。业务数据变更后调 `app.InvalidatePage(path)` 手动失效；配置 `VEN_REDIS_ADDR` 后会话与页面缓存切换为 Redis 后端（跨实例共享，未配置时行为不变）。
+## 快速开始
 
-**静态页 ISR**：`app.StaticPage(pattern, maxPages, smartLoad, handler)` 声明的公开页面，SSR 产物物化到 `VEN_ISR_DIR`（默认 `./isr-pages`），之后由中间件直接发文件（不再回 Node）。失效靠业务显式声明 `app.DataChange(pattern, ...params)`——不给参数全局失效、给满局部单页、给一部分子树（支持 `/user/blog/:id` 多层动态）。`DataChange` 永远异步即时返回：事件总线在静默窗口（5s，持续变更最多等 30s）后合批，先删物化文件与内存缓存、再由 smartLoad 声明按访问热度后台再生 Top-N（关闭且设上限时按 LRU 懒删除）。服务重启清空 ISR 目录重新物化。query 不参与 ISR；`VEN_ISR_ENABLED=false` 可整体关闭（dev 用）。
+**终端一 — Node SSR Worker**（先起，Go 启动依赖它拉路由表）：
 
-**集群部署**：多实例 = 单实例行为 + Redis 两类共享（会话/页面缓存 KV、DataChange 事件 Pub/Sub 广播），Go↔Node 1:1 配对，ISR 目录各实例自持。详见 [docs/cluster.md](docs/cluster.md)。
+```bash
+cd frame/node
+npm install
+npm run build      # 生成路由注册表 + tsc 编译
+node dist/main.js  # 127.0.0.1:3000
+```
 
-**日志**：统一请求日志（方法/路径/状态/耗时）、渲染事件日志（缓存 hit/miss/shared、Node 耗时）、鉴权拒绝日志（401/403 含角色与页面）；`/healthz` 暴露缓存命中/回源/共享计数。
+**终端二 — Go 网关**：
+
+```bash
+cd frame/go
+go run .           # :8080
+```
+
+访问 `http://127.0.0.1:8080/home`。demo 登录：`POST /auth/login {"role":"guest"}`（demo 放行，不校验凭据）。
+
+**检查命令**：Go 端 `go build ./... && go vet ./... && go test ./...`；Node 端 `npm run typecheck`。
+
+## hybrid API
+
+业务注册全部通过 `hybrid.App`（`frame/go/build/` 有完整示例）：
+
+| 方法 | 说明 |
+|---|---|
+| `Page(pattern, roles, handler)` | 动态页（GET+HEAD）。roles 为空即公开；鉴权 + 页面缓存 + SSR/JSON 双模式 |
+| `StaticPage(pattern, maxPages, smartLoad, handler)` | 静态页（ISR）。物化落盘直发；`maxPages` 上限（0=不限）；`smartLoad` 全局更新时按热度预渲染 Top-N，否则 LRU 懒删除 |
+| `Get/Post/Put/Delete(pattern, roles, handler)` | 业务 API，自动 `/api` 前缀（写了反而报错），全 JSON 响应 |
+| `RegisterRole(role, parents)` | 注册角色，可继承父角色（须在 Page 前完成） |
+| `DataChange(pattern, ...params)` | 显式声明数据变更 → ISR 失效（永远异步即时返回，详见下文） |
+| `InvalidatePage(path)` | 使某路径的页面缓存失效 |
+| `SetLoginRedirect(path)` | 401 时的登录跳转目标（默认 `/login`） |
+| `Listen(addr)` | 注册兜底路由并启动（兜底强制最后注册） |
+
+页面与 API 的 pattern 都不允许 `/api` 前缀冲突；页面 pattern 必须与 Node 路由表一致（启动校验，失败即报错）。
+
+### PageCtx（页面 handler，数据被截流）
+
+`Param(key)` / `Query(key)` / `JSON(data)` 设置数据 / `Render()` 强制 SSR / `NotFound()` 404。
+
+框架按请求头决定输出：`X-Ven-Data-Only: true` → 裸 JSON（SPA 取数）；否则 SSR 渲染整页 HTML。
+
+### ApiCtx（API handler，直接响应）
+
+`Param(key)` / `Query(key)` / `Bind(&v)` 解析 JSON body / `Body()` 原始请求体 / `JSON(status, data)` / `Error(status, message)`。
+
+## 鉴权与守卫
+
+角色支持继承（`RegisterRole("admin", []string{"user"})`），页面声明所需角色名，框架解析为等级做命中比较。
+
+**会话**：登录校验通过后 `Server.GrantAuth(ctx, role)` 生成会话令牌（24h TTL），下发双 cookie——`ven_auth`（HttpOnly，后端鉴权唯一依据）与 `ven_role`（JS 可读，前端守卫显示用）；`Server.RevokeAuth(ctx)` 注销。存储是 `auth.Backend` KV 接口，配 Redis 即跨实例共享。
+
+**守卫行为**：
+
+- HTML 导航 401 → `302 {loginPath}?next={原始URL}`；403 → 原地渲染 `/403` 错误页（URL 不变）
+- data-only 请求 401/403 → 裸 JSON，401 带 `X-Ven-Login-Path` 头（SPA router 统一拦截跳转）
+- API 401/403 → 永远裸 JSON
+
+## 页面缓存（动态页）
+
+SSR HTML 按 `路径 + 规范化 query + 数据指纹` 缓存（内存实现，1min TTL，上限 1000 条）。命中直接返回 HTML 不回 Node；同 key 并发防击穿只回源一次；仅缓存成功渲染（404/502/504 不缓存）。数据变更后调 `app.InvalidatePage(path)`。后端是 `pagecache.Backend` 接口，配 Redis 即跨实例共享。
+
+## 静态页 ISR 与事件总线
+
+`StaticPage` 声明的页面在首次 SSR 后物化到 `VEN_ISR_DIR`（原子 temp+rename），之后中间件直接发文件。
+
+**失效语义**：`DataChange(pattern, ...params)` 永远异步、即时返回——
+
+- 参数粒度：不给 = 全局失效、给满 = 单页、给一部分 = 子树（支持多层动态）
+- **debounce 合批**：静默窗口 5s（持续变更最多等 30s 强制 flush）
+- **批内先删后渲**：先删物化文件 + 清内存缓存，再由 smartLoad 声明按访问热度后台再生 Top-N
+- **批间流水 + 页面级代际**：再生渲染期间可并行处理下一代删除，老代渲染不得覆盖新代
+- **map 去重**：同页重复变更、范围重叠（全局吞局部、子树吞单页）一轮只处理一次
+- 未再生页面下次访问懒回源重新物化；服务**重启清空 ISR 目录**（不沿用旧产物）
+
+`VEN_ISR_ENABLED=false` 可整体关闭（dev 用）；query 不参与 ISR。
+
+## SPA router
+
+SSR 直出后由内置 SPA router 接管：registry 驱动路由匹配、链接点击拦截、data-only 取数（带 `X-Ven-Data-Only` 头）、401 统一按 `X-Ven-Login-Path` 跳登录页、滚动恢复与竞态/加载态处理。无需业务侧写路由表。
+
+## 日志与观测
+
+统一请求日志（方法/路径/状态/耗时）；渲染事件日志（缓存 hit/miss/shared、Node 耗时）；鉴权拒绝日志（401/403 含角色与页面）；ISR 失效/再生/淘汰/去重日志。`/healthz` 返回页面缓存命中/回源/共享计数。
+
+## 集群部署
+
+多实例 = 单实例行为 + Redis 两类共享：会话/页面缓存走 Redis KV，`DataChange` 事件经 Redis Pub/Sub 广播（允许丢，重启重载兜底）。Go↔Node 必须 1:1 配对（回调须回到提交者实例），LB 只架在用户流量侧，ISR 目录各实例自持。完整拓扑、配置对照表见 [docs/cluster.md](docs/cluster.md)。
+
+## 配置
+
+**Go 网关**（`frame/go/internal/config`）：
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `VEN_LISTEN_ADDR` | `:8080` | 监听地址 |
+| `VEN_NODE_WORKER_URL` | `http://127.0.0.1:3000` | Node Worker 地址 |
+| `VEN_NODE_SUBMIT_TIMEOUT` | `5s` | 任务提交超时 |
+| `VEN_RENDER_TIMEOUT` | `20s` | 渲染总超时（须大于提交超时） |
+| `VEN_INTERNAL_TOKEN` | `development-token` | 内部认证令牌（生产必须改） |
+| `VEN_MAX_PENDING_RENDERS` | `100` | 最大并发 pending 渲染数 |
+| `VEN_ASSETS_DIR` | `../node/build` | 静态资源目录 |
+| `VEN_ISR_DIR` | `./isr-pages` | ISR 物化目录 |
+| `VEN_ISR_ENABLED` | `true` | ISR 开关（dev 可 false） |
+| `VEN_REDIS_ADDR` | 空 | Redis 地址（空 = 内存单实例模式） |
+| `VEN_REDIS_PASSWORD` / `VEN_REDIS_DB` | 空 / `0` | Redis 密码 / 库编号 |
+
+**Node Worker**（`frame/node/config.ts`）：
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `VEN_RENDER_CALLBACK_URL` | `http://127.0.0.1:8080/_internal/render-callback` | 渲染回调地址（须指回配对的 Go） |
+| `VEN_INTERNAL_TOKEN` | `development-token` | 与 Go 侧一致 |
 
 ## 目录结构
 
@@ -40,116 +154,36 @@ ven_hybird/
 ├── src/                        # 前端页面（Node 构建，路由唯一真相源）
 │   ├── home/page.tsx           #   /home
 │   ├── about/page.tsx          #   /about
-│   ├── blog/[id]/page.tsx      #   /blog/:id
-│   ├── app/                    #   页面容器与类型
+│   ├── blog/[id]/page.tsx      #   /blog/:id（多层动态同理）
 │   ├── entry-client.tsx        #   SPA 入口
 │   └── entry-server.tsx        #   SSR 入口
 ├── frame/
 │   ├── go/                     # Go 网关
-│   │   ├── main.go             #   启动入口
-│   │   ├── hybrid/             #   胶水层：App、Page、PageCtx
-│   │   ├── build/              #   业务注册：角色 + 页面 handler
+│   │   ├── main.go             #   启动入口（配置→Node client→拉路由表→注册→Listen）
+│   │   ├── hybrid/             #   胶水层：App、Page/StaticPage/API、PageCtx/ApiCtx
+│   │   ├── build/              #   业务注册：角色、页面、demo 登录、demo API
 │   │   └── internal/
-│   │       ├── httpserver/     #   Fiber 服务器、路由、SSR 代理
-│   │       ├── auth/           #   权限等级注册表、cookie 鉴权
-│   │       ├── pagecache/      #   页面缓存（Backend 接口 + 内存实现）
-│   │       ├── isr/            #   ISR 文件层（落盘、直发、匹配器）
-│   │       ├── event/          #   变更事件总线（debounce、先删后渲）
-│   │       ├── redis/          #   Redis 后端与事件传输（集群可选）
+│   │       ├── httpserver/     #   Fiber 服务器、路由、SSR 代理、ISR 接线
+│   │       ├── auth/           #   角色注册表、会话存储（Backend 接口）
+│   │       ├── pagecache/      #   页面缓存（Backend 接口 + 内存实现 + 防击穿）
+│   │       ├── isr/            #   ISR 文件层（落盘、直发、匹配器、LRU）
+│   │       ├── event/          #   变更事件总线（debounce、先删后渲、代际去重）
+│   │       ├── redis/          #   Redis 后端与事件 Pub/Sub（集群可选）
 │   │       ├── pagepattern/    #   页面 pattern 校验器
 │   │       ├── ssr/            #   SSR 客户端、pending 注册中心、HookID
 │   │       └── config/         #   环境变量配置加载
 │   └── node/                   # Node SSR Worker
 │       ├── main.ts             #   启动入口
 │       ├── http-transport/     #   HTTP 控制器、渲染执行门
-│       ├── build/              #   SPA/SSR 构建器、页面注册表生成
+│       ├── page-builder/       #   SPA/SSR 构建器、页面注册表生成
 │       └── config.ts           #   配置加载
 └── docs/                       # 文档
 ```
 
-## 页面注册
-
-页面在 Go 端通过 `hybrid.App` 注册，pattern 必须与 Node 页面路由一致：
-
-```go
-// frame/go/build/pages.go
-func Register(a *hybrid.App) error {
-    a.RegisterRole("guest", nil)
-
-    a.Page("/home", nil, homePage)              // 无需鉴权
-    a.Page("/about", nil, aboutPage)            // 无需鉴权
-    a.Page("/blog/:id", []string{"guest"}, blogPage)  // 需要 guest 角色
-    return nil
-}
-```
-
-**Page handler 签名**：
-
-```go
-func homePage(c *hybrid.PageCtx) error {
-    // c.JSON(data)   — 设置数据，框架根据请求头决定返回 JSON 或 SSR 页面
-    // c.Render()     — 强制 SSR 渲染
-    // c.Param(key)   — 读取路径参数
-    // c.Query(key)   — 读取查询参数
-    // c.NotFound()   — 返回 404
-    return c.JSON(map[string]any{"title": "VenHybird"})
-}
-```
-
-**请求处理流程**：cookie 鉴权 → 权限校验 → handler 设置数据 → `X-Ven-Data-Only: true` 返回 JSON，否则走 SSR 渲染返回 HTML。
-
-## 权限系统
-
-角色支持层级继承，注册时指定父角色：
-
-```go
-a.RegisterRole("admin", []string{"user"})  // admin 继承 user
-a.RegisterRole("user", []string{"guest"})  // user 继承 guest
-```
-
-页面通过角色名数组声明所需权限，框架解析为等级列表后做命中比较。
-
-**cookie 鉴权**：登录校验通过后调用放行函数 `Server.GrantAuth(ctx, role)`，生成随机会话令牌存入服务端会话缓存（`token → role`），并下发两个 cookie：
-
-- `ven_auth`（HttpOnly）：会话令牌，后端鉴权唯一依据，每次请求拿它到会话缓存比对；
-- `ven_role`（JS 可读）：角色名明文，供前端路由守卫使用（守卫注入待后续实现）。
-
-会话存储后端是 `auth.Backend` KV 接口（`Set/Get/Delete`），当前为内存实现（24h 过期），预留 Redis 等外部存储切换空间。登出调用 `Server.RevokeAuth(ctx)` 注销会话并清除 cookie。
-
-## 本地运行
-
-**终端一 — Node SSR Worker**：
-
-```bash
-cd frame/node
-npm install
-npm run build
-node dist/main.js
-```
-
-**终端二 — Go 网关**：
-
-```bash
-cd frame/go
-go run .
-```
-
-访问 `http://127.0.0.1:8080/home`。
-
-## 环境变量
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `VEN_LISTEN_ADDR` | `:8080` | Go 网关监听地址 |
-| `VEN_NODE_WORKER_URL` | `http://127.0.0.1:3000` | Node SSR Worker 地址 |
-| `VEN_NODE_SUBMIT_TIMEOUT` | `5s` | 任务提交超时 |
-| `VEN_RENDER_TIMEOUT` | `20s` | 渲染总超时（须大于提交超时） |
-| `VEN_INTERNAL_TOKEN` | `development-token` | 内部认证令牌 |
-| `VEN_MAX_PENDING_RENDERS` | `100` | 最大并发渲染数 |
-| `VEN_ASSETS_DIR` | `../node/build` | 静态资源目录 |
-
 ## 文档
 
+- [集群部署](docs/cluster.md)
 - [Go 与 Node 渲染协议](docs/architecture/go-http-handler.md)
+- [Go 网关分析](docs/architecture/go-analysis.md)
 - [Node 渲染流程](docs/architecture/node-flow.md)
 - [HTTP Transport API](docs/api/http-transport.md)
