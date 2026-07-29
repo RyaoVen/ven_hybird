@@ -55,6 +55,10 @@ func (s *Store) filePathFor(urlPath string) (string, bool) {
 	return full, true
 }
 
+// dataOnlyHeader 是 SPA router 取数请求头（值为 "true" 时下游应返回 JSON 而非 HTML）。
+// 与 hybrid/page.go 的 dataOnlyHeader 同源：分层纪律 internal 不 import hybrid，本地重新定义。
+const dataOnlyHeader = "X-Ven-Data-Only"
+
 // Middleware 命中物化文件直接发回，miss 放行后续路由。
 // 同时记录访问统计（供热门判定与 LRU）。
 // 用 ReadFile 而非 SendFile：避免 fasthttp 句柄池在 Windows 上锁住文件
@@ -62,6 +66,12 @@ func (s *Store) filePathFor(urlPath string) (string, bool) {
 func (s *Store) Middleware() fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
 		if !s.enabled || (ctx.Method() != fiber.MethodGet && ctx.Method() != fiber.MethodHead) {
+			return ctx.Next()
+		}
+		// data-only 取数（SPA 跳转）要的是 JSON 而非整页 HTML：
+		// 物化文件截胡会让 router 解析失败卡死，直接放行给下游 handler；
+		// 此类请求不计页面访问统计
+		if ctx.Get(dataOnlyHeader) == "true" {
 			return ctx.Next()
 		}
 		full, ok := s.filePathFor(ctx.Path())

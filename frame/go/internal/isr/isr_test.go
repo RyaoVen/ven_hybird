@@ -3,6 +3,7 @@ package isr
 import (
 	"io"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,6 +111,58 @@ func TestStoreMaterializeAndServe(t *testing.T) {
 	_ = resp2.Body.Close()
 	if resp2.StatusCode != 200 {
 		t.Fatalf("expected 200 fallback, got %d", resp2.StatusCode)
+	}
+}
+
+// 回归 #59：data-only 取数（SPA 跳转）不得被物化文件截胡。
+func TestStoreMiddlewareDataOnly(t *testing.T) {
+	store := NewStore(t.TempDir(), true)
+	if err := store.Materialize("/news/1", "<html>v1</html>"); err != nil {
+		t.Fatalf("materialize failed: %v", err)
+	}
+	base := store.AccessCount("/news/1") // Materialize 自身计 1 次
+
+	newApp := func() *fiber.App {
+		app := fiber.New()
+		app.Use(store.Middleware())
+		// 下游 handler：模拟 hybrid 页面 handler 的 data-only JSON 响应
+		app.Get("/news/1", func(ctx *fiber.Ctx) error {
+			return ctx.JSON(fiber.Map{"id": "1"})
+		})
+		return app
+	}
+
+	// 带 data-only 头：放行到下游返回 JSON，不发物化文件、不计访问
+	req := httptest.NewRequest("GET", "/news/1", nil)
+	req.Header.Set(dataOnlyHeader, "true")
+	resp, err := newApp().Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != 200 || !strings.Contains(string(body), `"id":"1"`) {
+		t.Fatalf("expected downstream JSON, got %d %s", resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), "<html>") {
+		t.Fatalf("data-only must not serve materialized HTML, got %s", body)
+	}
+	if got := store.AccessCount("/news/1"); got != base {
+		t.Fatalf("data-only should not record access, count %d -> %d", base, got)
+	}
+
+	// 不带头：照旧直发物化 HTML（原行为不回归）
+	resp2, err := newApp().Test(httptest.NewRequest("GET", "/news/1", nil))
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	body2, _ := io.ReadAll(resp2.Body)
+	_ = resp2.Body.Close()
+	if resp2.StatusCode != 200 || string(body2) != "<html>v1</html>" {
+		t.Fatalf("expected materialized HTML, got %d %s", resp2.StatusCode, body2)
+	}
+	if got := store.AccessCount("/news/1"); got != base+1 {
+		t.Fatalf("plain hit should record access, count %d -> %d", base, got)
 	}
 }
 
