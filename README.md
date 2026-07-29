@@ -114,6 +114,15 @@ SSR HTML 按 `路径 + 规范化 query + 数据指纹` 缓存（内存实现，1
 
 SSR 直出后由内置 SPA router 接管：registry 驱动路由匹配、链接点击拦截、data-only 取数（带 `X-Ven-Data-Only` 头）、401 统一按 `X-Ven-Login-Path` 跳登录页、滚动恢复与竞态/加载态处理。无需业务侧写路由表。
 
+## 实时推送（SSE）
+
+`/_internal/sse?route=<pattern>&<query>` 端点按页面订阅数据变更：事件总线每次 flush（`DataChange` / `InvalidatePage` 生效时）向匹配连接的订阅推送 `page-data` 事件，载荷与首屏 `PageBootstrap` 同形（`route`/`params`/`query`/`initialState`）。
+
+内置 entry-client 会自动为当前路由建立订阅，收到推送后走 SPA router 既有的 `setState` 通道无感刷新——**页面代码零改动**，SSR/SPA/ISR 页面一视同仁。ISR 静态页因此不会让用户看到"一块老一块新"：文件再生完成的同时新数据已推到浏览器。
+
+- 慢客户端丢帧不保活（推送是敦促更新，不是可靠投递）；连接以浏览器 EventSource 自动重连
+- 关停时先 drain 再关连接，客户端自动重连到新实例；多实例下事件经 Redis 广播，天然全实例生效
+
 ## 日志与观测
 
 统一请求日志（方法/路径/状态/耗时）；渲染事件日志（缓存 hit/miss/shared、Node 耗时）；鉴权拒绝日志（401/403 含角色与页面）；ISR 失效/再生/淘汰/去重日志。`/healthz` 返回页面缓存命中/回源/共享计数。
