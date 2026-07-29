@@ -157,6 +157,7 @@ SSR 直出后由内置 SPA router 接管：registry 驱动路由匹配、链接�
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
+| `VEN_NODE_PORT` | `3000` | Node Worker 监听端口 |
 | `VEN_RENDER_CALLBACK_URL` | `http://127.0.0.1:8080/_internal/render-callback` | 渲染回调地址（须指回配对的 Go） |
 | `VEN_INTERNAL_TOKEN` | `development-token` | 与 Go 侧一致 |
 

@@ -59,9 +59,17 @@ export const PageBuildDefaultConfig: PageBuildConfig = {
     ssr: SSRBuildConfig,
 };
 
-/** HTTP 服务器配置：监听 127.0.0.1:3000，无 SSL，body 上限 10MB */
+/** 解析监听端口：VEN_NODE_PORT 环境变量，未设/非法值回退 3000 */
+function resolvePort(): number {
+    const raw = process.env.VEN_NODE_PORT;
+    if (!raw) return 3000;
+    const port = Number.parseInt(raw, 10);
+    return Number.isInteger(port) && port > 0 && port < 65536 ? port : 3000;
+}
+
+/** HTTP 服务器配置：监听 127.0.0.1:3000（VEN_NODE_PORT 可改），无 SSL，body 上限 10MB */
 export const HttpServerConfig: HttpServerOptions = {
-    port: 3000,
+    port: resolvePort(),
     host: "127.0.0.1",
     ssl: false,
     certPath: "",

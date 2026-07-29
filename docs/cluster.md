@@ -66,6 +66,7 @@
 | `VEN_INTERNAL_TOKEN` | ✅ | Go↔Node 内部令牌必须一致 |
 | `VEN_LISTEN_ADDR` | 每实例可不同 | Go 监听地址 |
 | `VEN_NODE_WORKER_URL` | **每实例不同** | 指向配对的 Node |
+| `VEN_NODE_PORT`（Node 侧） | **每实例不同** | Node Worker 监听端口 |
 | `VEN_RENDER_CALLBACK_URL`（Node 侧） | **每实例不同** | 指回配对的 Go |
 | `VEN_ISR_DIR` | 每实例本地 | 不要指向共享存储 |
 | `VEN_ISR_ENABLED` | ✅ 建议 true | 生产开启；dev 可 false |
