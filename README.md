@@ -48,7 +48,7 @@ cd frame/go
 go run .           # :8080
 ```
 
-访问 `http://127.0.0.1:8080/home`。demo 登录：`POST /auth/login {"role":"guest"}`（demo 放行，不校验凭据）。
+启动后在 `src/` 下新建 `<路径>/page.tsx` 即得页面，在 `frame/go/build/` 的 `Register` 里注册角色/页面/API（当前为空骨架；用法见 [PROMPT.md](PROMPT.md)）。
 
 **检查命令**：Go 端 `go build ./... && go vet ./... && go test ./...`；Node 端 `npm run typecheck && npm test`（vitest，纯逻辑单元测试）。
 
@@ -165,16 +165,15 @@ SSR 直出后由内置 SPA router 接管：registry 驱动路由匹配、链接�
 ```text
 ven_hybird/
 ├── src/                        # 前端页面（Node 构建，路由唯一真相源）
-│   ├── home/page.tsx           #   /home
-│   ├── about/page.tsx          #   /about
-│   ├── blog/[id]/page.tsx      #   /blog/:id（多层动态同理）
+│   ├── <页面目录>/page.tsx      #   你的页面：文件路径即路由，[id] → :id（多层动态同理）
+│   ├── app/                    #   SPA 运行时（PageApp / router / 类型，框架持有）
 │   ├── entry-client.tsx        #   SPA 入口
 │   └── entry-server.tsx        #   SSR 入口
 ├── frame/
 │   ├── go/                     # Go 网关
 │   │   ├── main.go             #   启动入口（配置→Node client→拉路由表→注册→Listen）
 │   │   ├── hybrid/             #   胶水层：App、Page/StaticPage/API、PageCtx/ApiCtx
-│   │   ├── build/              #   业务注册：角色、页面、demo 登录、demo API
+│   │   ├── build/              #   业务注册入口（Register 空壳，业务写这里）
 │   │   └── internal/
 │   │       ├── httpserver/     #   Fiber 服务器、路由、SSR 代理、ISR 接线
 │   │       ├── auth/           #   角色注册表、会话存储（Backend 接口）

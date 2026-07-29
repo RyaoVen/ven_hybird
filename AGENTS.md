@@ -9,7 +9,7 @@ VenHybird：Go(Fiber) 网关 + Node SSR worker 的混合渲染框架。设计哲
 - `frame/go`（:8080）：
   - `internal/`：全部实现（config / ssr / httpserver / auth / pagecache / pagepattern / isr / event / sse / redis）。**internal 的类型绝不暴露到 hybrid 的公开签名**
   - `hybrid/`：胶水层，业务唯一引用的包（`App` / `Page` / `StaticPage` / `Get|Post|Put|Delete` / `PageCtx` / `ApiCtx` / `DataChange` 等）
-  - `build/`：业务注册（角色、页面、demo API），改业务只动这里
+  - `build/`：业务注册入口（`Register` 空壳），改业务只动这里
 - `main.go`：启动编排（配置 → Node client → 拉 `/pages` → server → hybrid.New → build.Register → Listen）
 
 ## 构建与检查（提交前必跑）
