@@ -1,7 +1,8 @@
 /**
  * @file SPA 客户端路由器
  * @description 框架预制：拦截站内链接点击，按 registry 匹配路由后经 data-only 取数，
- * 驱动 PageApp 重渲染；401 统一跳登录页，403 原地渲染错误页，失败回整页跳转（MPA 兜底）
+ * 驱动 PageApp 重渲染；401 统一跳登录页，403 原地渲染错误页，失败回整页跳转（MPA 兜底）。
+ * 另内置 SSE 实时推送订阅：数据变更时服务端推最新 initialState，走同一 setState 通道无感更新。
  */
 import { matchPage } from "../../frame/node/.generated/pageRegistry";
 
@@ -49,6 +50,57 @@ let currentState: VenRouterState = {
 function emit(patch: Partial<VenRouterState>): void {
     currentState = { ...currentState, ...patch };
     handler?.(currentState);
+}
+
+/** SSE 推送载荷（与 Go 端 PageBootstrap 同形，params 这里不用） */
+interface LivePushPayload {
+    route: string;
+    query: Record<string, string>;
+    initialState: unknown;
+}
+
+/** 当前 SSE 订阅（随导航重建） */
+let liveSource: EventSource | null = null;
+
+/** query 浅比较（推送只应用到同 path 同 query 的当前视图） */
+function sameQuery(a: Record<string, string>, b: Record<string, string>): boolean {
+    const aKeys = Object.keys(a);
+    const bKeys = Object.keys(b);
+    return aKeys.length === bKeys.length && aKeys.every((key) => a[key] === b[key]);
+}
+
+/**
+ * 订阅当前路由的实时推送（SSE）：数据变更时服务端推送最新 initialState，
+ * 走与 data-only 取数相同的 setState 通道重渲染——在线用户无感更新。
+ * 导航后调用以切换到新路由的订阅。
+ */
+function subscribeLive(): void {
+    liveSource?.close();
+    liveSource = null;
+    if (typeof EventSource === "undefined") return;
+    const search = window.location.search;
+    const url = `/_internal/sse?route=${encodeURIComponent(currentState.route)}${search ? "&" + search.slice(1) : ""}`;
+    liveSource = new EventSource(url);
+    liveSource.addEventListener("page-data", (event) => {
+        let payload: LivePushPayload;
+        try {
+            payload = JSON.parse((event as MessageEvent).data) as LivePushPayload;
+        } catch {
+            return;
+        }
+        // 导航中的迟到推送丢弃：只应用到当前视图（route + query 一致）
+        if (payload.route !== currentState.route || !sameQuery(payload.query, currentState.query)) {
+            return;
+        }
+        emit({ initialState: payload.initialState });
+    });
+    // 连接错误由 EventSource 自带重连处理；401/403 时服务端直接拒绝，不再订阅
+}
+
+/** 退订实时推送（403 视图与卸载时用） */
+function unsubscribeLive(): void {
+    liveSource?.close();
+    liveSource = null;
 }
 
 /** 取路径部分（不含 query） */
@@ -119,7 +171,8 @@ async function loadRoute(url: string, isPop: boolean): Promise<void> {
         return;
     }
     if (response.status === 403) {
-        // 原地渲染错误页，URL 不变
+        // 原地渲染错误页，URL 不变；403 视图不可订阅推送（服务端同样会拒绝）
+        unsubscribeLive();
         setLoading(false);
         emit({ route: pathOf(url), query: queryOf(url), initialState: null, forbidden: true });
         return;
@@ -133,6 +186,7 @@ async function loadRoute(url: string, isPop: boolean): Promise<void> {
     const data: unknown = await response.json();
     setLoading(false);
     emit({ route: pathOf(url), query: queryOf(url), initialState: data, forbidden: false });
+    subscribeLive(); // 导航完成：切换到新路由的推送订阅
     window.scrollTo(0, isPop ? (scrollPositions.get(currentKey) ?? 0) : 0);
 }
 
@@ -176,6 +230,7 @@ export function installVenRouter(
 ): () => void {
     currentState = initial;
     handler = onState;
+    subscribeLive(); // 首屏路由的推送订阅（ISR 物化页水合后同样生效）
     if (installed) {
         return () => { handler = null; };
     }
@@ -186,6 +241,7 @@ export function installVenRouter(
     return () => {
         document.removeEventListener("click", onDocumentClick);
         window.removeEventListener("popstate", onPopState);
+        unsubscribeLive();
         installed = false;
         handler = null;
     };
