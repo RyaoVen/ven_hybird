@@ -21,7 +21,8 @@ import (
 	"time"
 )
 
-// 默认 debounce 参数（常量先行，后续配置化）。
+// 默认 debounce 参数（config.Load 的默认值与此一致；
+// 字面量构造 Config 未设 EventQuietWindow/EventMaxWait 时总线保留这些值）。
 const (
 	defaultQuietWindow = 5 * time.Second  // 静默窗口：无新变更即 flush
 	defaultMaxWait     = 30 * time.Second // 最大等待：持续变更强制 flush 防饥饿
