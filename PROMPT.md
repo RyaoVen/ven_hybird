@@ -26,7 +26,7 @@ cd frame/go && go run .                                               # :8080，
 
 - **能动**：`frame/go/build/`（Go 业务注册：角色、页面、API、登录）和 `src/`（React 页面）
 - **不能动**：`frame/go/internal/`、`frame/go/hybrid/`、`frame/node/`——这是框架本体。觉得框架缺能力时先向我提出，不要私改框架
-- 仓里的 demo（`build/` 三个文件 + `src/` 的 home/about/news/blog/login/403 页）就是活示例，照它的写法替换/扩充成博客业务
+- 仓内是空业务骨架：`frame/go/build/` 只有一个 `Register` 空壳函数（main.go 的注册入口），`src/` 下没有任何页面——按下面的契约从零写你的博客业务
 
 ### 页面契约（前端）
 
@@ -78,7 +78,7 @@ a.SetLoginRedirect("/login")  // 401 跳转目标（默认就是 /login）
 a.InvalidatePage("/posts/1") // 动态页手动失效（StaticPage 请用 DataChange）
 ```
 
-守卫行为：未登录访问受限页 → 302 `{loginPath}?next=`（data-only 请求则 401 + `X-Ven-Login-Path` 头）；已登录但角色不足 → 原地渲染 `/403` 页。这两个页面需要自己提供（demo 里有 `/login`、`/403` 示例）。
+守卫行为：未登录访问受限页 → 302 `{loginPath}?next=`（data-only 请求则 401 + `X-Ven-Login-Path` 头）；已登录但角色不足 → 原地渲染 `/403` 页。`/login` 与 `/403` 两个页面需要你自己在 `src/` 下提供。
 
 ### 失效与实时语义（重要）
 
@@ -94,4 +94,4 @@ a.InvalidatePage("/posts/1") // 动态页手动失效（StaticPage 请用 DataCh
 
 ### 建议的第一步
 
-把 demo 换成博客骨架：角色 `reader`/`author`；页面 `/posts`、`/posts/[id]`、`/login`、`/write`；API `GET/POST /posts`、`PUT/DELETE /posts/:id`；登录页表单 POST `/auth/login`（先接一个内存用户表，验证全链路后再换真实存储）。跑通"登录 → 发文 → 列表/详情更新（含开两个浏览器窗口验证 SSE 无感刷新）"即证明链路全通。
+在空骨架上搭出博客主链路：角色 `reader`/`author`；页面 `/posts`、`/posts/[id]`、`/login`、`/write`（`src/` 下对应 page.tsx）；`build/Register` 里注册页面与 API `GET/POST /posts`、`PUT/DELETE /posts/:id`；登录页表单 POST `/auth/login`（先接一个内存用户表，验证全链路后再换真实存储）。跑通"登录 → 发文 → 列表/详情更新（含开两个浏览器窗口验证 SSE 无感刷新）"即证明链路全通。
