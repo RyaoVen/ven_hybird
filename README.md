@@ -196,6 +196,7 @@ ven_hybird/
 ## 文档
 
 - [设计哲学](vision.md)
+- [PROMPT.md](PROMPT.md)（项目介绍提示词：拉本仓作为框架开发时，喂给 AI 代理的开场 briefing）
 - [AGENTS.md](AGENTS.md)（协作/代理开发指南：布局纪律、检查命令、测试风格、坑与红线）
 - [集群部署](docs/cluster.md)
 - [Go 与 Node 渲染协议](docs/architecture/go-http-handler.md)
