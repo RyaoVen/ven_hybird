@@ -49,6 +49,7 @@ func (a *App) Page(pattern string, role []string, h PageHandler) error {
 	}
 
 	a.pages = append(a.pages, page{Pattern: pattern, AuthLevels: levels})
+	a.pageHandlers[pattern] = h
 
 	handler := func(ctx *fiber.Ctx) error {
 		// 1. 鉴权：仅当页面有 role 要求时执行，公开页面直接放行

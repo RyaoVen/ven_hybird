@@ -53,6 +53,7 @@ func main() {
 	go func() {
 		<-shutdown
 		log.Printf("shutdown signal received, draining...")
+		app.Close() // 先 drain SSE 连接（EventSource 客户端自动重连到存活实例）
 		if err := server.App().ShutdownWithTimeout(5 * time.Second); err != nil {
 			log.Printf("graceful shutdown failed: %v", err)
 		}

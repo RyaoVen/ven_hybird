@@ -5,6 +5,8 @@ package hybrid
 import (
 	"ven_hybird/internal/event"
 	"ven_hybird/internal/httpserver"
+	"ven_hybird/internal/isr"
+	"ven_hybird/internal/sse"
 )
 
 // App 是 hybrid 框架应用，底层基于 *httpserver.Server。
@@ -13,8 +15,11 @@ type App struct {
 	pages         []page
 	loginRedirect string // 401 时的登录跳转目标
 
-	staticHandlers map[string]PageHandler // StaticPage 数据函数（按模板字符串；启动期注册，运行期只读）
-	bus            *event.Bus             // 变更事件总线（DataChange 唯一失效路径）
+	pageHandlers   map[string]PageHandler      // Page 数据函数（按模板字符串；启动期注册，运行期只读）
+	staticHandlers map[string]PageHandler      // StaticPage 数据函数（同上）
+	pageDecls      map[string]*isr.Declaration // 页面 pattern 解析缓存（SSE 路由解析用）
+	bus            *event.Bus                  // 变更事件总线（DataChange 唯一失效路径）
+	hub            *sse.Hub                    // SSE 推送连接表
 }
 
 // defaultLoginRedirect 是默认的登录跳转路径。
@@ -25,14 +30,20 @@ func New(server *httpserver.Server) *App {
 	a := &App{
 		server:         server,
 		loginRedirect:  defaultLoginRedirect,
+		pageHandlers:   make(map[string]PageHandler),
 		staticHandlers: make(map[string]PageHandler),
+		pageDecls:      make(map[string]*isr.Declaration),
 	}
+	a.hub = sse.New(a.pageData)
 	// 事件总线接线：① 删除走 httpserver 的 ISR 失效，② 再生走本层数据函数 + 回源渲染/落盘；
-	// 配置了 Redis 时接入跨实例传输（DataChange 广播到全部实例，各实例独立走本地总线）
+	// 配置了 Redis 时接入跨实例传输（DataChange 广播到全部实例，各实例独立走本地总线）；
+	// flush ① 完成后联动 SSE 推送（在线用户无感更新）
 	a.bus = event.New(server.InvalidateStatic, a.renderStatic, server.MaterializeStatic)
+	a.bus.SetNotifier(a.hub.NotifyEvents)
 	if transport := server.EventTransport(); transport != nil {
 		a.bus.SetTransport(transport)
 	}
+	a.registerSSE()
 	return a
 }
 
@@ -52,9 +63,16 @@ func (a *App) RegisterRole(role string, parents []string) error {
 	return a.server.RegisterRole(role, parents)
 }
 
-// InvalidatePage 使指定路径的页面缓存失效（业务数据变更后手动调用）。
+// InvalidatePage 使指定路径的页面缓存失效（业务数据变更后手动调用），
+// 并联动向正在浏览该路径的 SSE 连接推送最新数据（动态页实时更新）。
 func (a *App) InvalidatePage(path string) {
 	a.server.InvalidatePage(path)
+	a.hub.NotifyPath(path)
+}
+
+// Close 关停实时推送（drain 全部 SSE 连接；优雅关停时在 HTTP 关闭前调用）。
+func (a *App) Close() {
+	a.hub.Close()
 }
 
 // Listen 注册页面兜底路由并启动监听。
