@@ -50,7 +50,7 @@ go run .           # :8080
 
 访问 `http://127.0.0.1:8080/home`。demo 登录：`POST /auth/login {"role":"guest"}`（demo 放行，不校验凭据）。
 
-**检查命令**：Go 端 `go build ./... && go vet ./... && go test ./...`；Node 端 `npm run typecheck`。
+**检查命令**：Go 端 `go build ./... && go vet ./... && go test ./...`；Node 端 `npm run typecheck && npm test`（vitest，纯逻辑单元测试）。
 
 ## hybrid API
 
