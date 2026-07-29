@@ -89,4 +89,4 @@ callback 包含 HTML、Node 计算出的 `matchedRoute` 和 `pageName`。同一 
 | internal token | `development-token` |
 | 最大并发渲染 | `4` |
 
-ISR、页面缓存、业务鉴权与数据预取不由 Node 持有；它们是下一阶段 Go 网关的职责。
+ISR、页面缓存、业务鉴权与数据预取已由 Go 网关持有（见 README 与 cluster.md），Node 只负责页面匹配与渲染。
