@@ -148,6 +148,10 @@ SSR 直出后由内置 SPA router 接管：registry 驱动路由匹配、链接�
 | `VEN_ISR_ENABLED` | `true` | ISR 开关（dev 可 false） |
 | `VEN_REDIS_ADDR` | 空 | Redis 地址（空 = 内存单实例模式） |
 | `VEN_REDIS_PASSWORD` / `VEN_REDIS_DB` | 空 / `0` | Redis 密码 / 库编号 |
+| `VEN_SESSION_TTL` | `24h` | 会话有效期 |
+| `VEN_PAGE_CACHE_TTL` | `1m` | 动态页内存缓存有效期 |
+| `VEN_EVENT_QUIET_WINDOW` | `5s` | 事件总线 debounce 静默窗口 |
+| `VEN_EVENT_MAX_WAIT` | `30s` | 持续变更最大等待（须大于静默窗口） |
 
 **Node Worker**（`frame/node/config.ts`）：
 

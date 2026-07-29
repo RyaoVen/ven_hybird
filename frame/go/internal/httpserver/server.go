@@ -41,6 +41,12 @@ type Server struct {
 	fallbackRegistered bool                        // 页面兜底路由是否已注册（RegisterPageFallback 幂等标记）
 }
 
+// 默认值：Config 由字面量构造（测试）未设这些字段时回退到与 config.Load 相同的默认。
+const (
+	defaultSessionTTL   = 24 * time.Hour // 会话有效期
+	defaultPageCacheTTL = time.Minute    // 页面缓存有效期
+)
+
 // New 创建并初始化 HTTP 服务器实例。
 // patterns 为 Node 页面路由模式校验器，启动时通过 pagepattern.Fetch 拉取构建。
 func New(
@@ -50,6 +56,13 @@ func New(
 	hookIDs ssr.HookIDGenerator,
 	patterns *pagepattern.Validator,
 ) *Server {
+	// 零值回退默认（字面量构造 Config 时不带时间字段的场景）
+	if cfg.SessionTTL <= 0 {
+		cfg.SessionTTL = defaultSessionTTL
+	}
+	if cfg.PageCacheTTL <= 0 {
+		cfg.PageCacheTTL = defaultPageCacheTTL
+	}
 	app := fiber.New(fiber.Config{
 		AppName:               "VenHybird",
 		ReadTimeout:           60 * time.Second, // 大于浏览器 keep-alive 空闲，消除 408 噪音
@@ -89,9 +102,9 @@ func New(
 		pending:        pending,
 		hookIDs:        hookIDs,
 		auth:           auth.NewRegistry(),
-		sessions:       auth.NewSessionStore(sessionBackend, sessionTTL),
+		sessions:       auth.NewSessionStore(sessionBackend, cfg.SessionTTL),
 		patterns:       patterns,
-		pageCache:      pagecache.NewStore(pageBackend, pageCacheTTL),
+		pageCache:      pagecache.NewStore(pageBackend, cfg.PageCacheTTL),
 		isrStore:       isr.NewStore(cfg.IsrDir, cfg.IsrEnabled),
 		eventTransport: eventTransport,
 		staticDecls:    make(map[string]*isr.Declaration),
@@ -109,14 +122,13 @@ func (s *Server) reloadISR() {
 	}
 }
 
-// sessionTTL 是会话有效期（常量先行，后续再配置化）。
-const sessionTTL = 24 * time.Hour
+// Config 返回服务器使用的配置（值拷贝，只读用途）。
+func (s *Server) Config() config.Config {
+	return s.config
+}
 
-// 页面缓存参数（常量先行，后续再配置化）。
-const (
-	pageCacheTTL      = time.Minute // 页面缓存有效期
-	pageCacheCapacity = 1000        // 页面缓存最大条目数（均值 ~30KB/页 → ~30MB）
-)
+// pageCacheCapacity 是页面缓存最大条目数（均值 ~30KB/页 → ~30MB）。
+const pageCacheCapacity = 1000
 
 // InvalidatePage 使指定路径的全部缓存变体（任意 query/data）失效。
 // 手动失效入口：业务数据变更后调用；未来 ISR/DataChange 事件也挂在这里。

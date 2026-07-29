@@ -39,6 +39,11 @@ func New(server *httpserver.Server) *App {
 	// 配置了 Redis 时接入跨实例传输（DataChange 广播到全部实例，各实例独立走本地总线）；
 	// flush ① 完成后联动 SSE 推送（在线用户无感更新）
 	a.bus = event.New(server.InvalidateStatic, a.renderStatic, server.MaterializeStatic)
+	// debounce 参数配置化：字面量构造 Config（测试）未设时保留总线默认值
+	if cfg := server.Config(); cfg.EventQuietWindow > 0 {
+		a.bus.QuietWindow = cfg.EventQuietWindow
+		a.bus.MaxWait = cfg.EventMaxWait
+	}
 	a.bus.SetNotifier(a.hub.NotifyEvents)
 	if transport := server.EventTransport(); transport != nil {
 		a.bus.SetTransport(transport)

@@ -70,3 +70,5 @@
 | `VEN_ISR_DIR` | 每实例本地 | 不要指向共享存储 |
 | `VEN_ISR_ENABLED` | ✅ 建议 true | 生产开启；dev 可 false |
 | `VEN_MAX_PENDING_RENDERS` / `VEN_RENDER_TIMEOUT` / `VEN_NODE_SUBMIT_TIMEOUT` | ✅ | 按实例容量调整亦可 |
+| `VEN_SESSION_TTL` / `VEN_PAGE_CACHE_TTL` | ✅ | 会话 / 页面缓存有效期 |
+| `VEN_EVENT_QUIET_WINDOW` / `VEN_EVENT_MAX_WAIT` | ✅ | 事件总线 debounce 窗口；各实例独立计时，无需对齐 |
