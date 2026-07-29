@@ -195,6 +195,8 @@ ven_hybird/
 
 ## 文档
 
+- [设计哲学](vision.md)
+- [AGENTS.md](AGENTS.md)（协作/代理开发指南：布局纪律、检查命令、测试风格、坑与红线）
 - [集群部署](docs/cluster.md)
 - [Go 与 Node 渲染协议](docs/architecture/go-http-handler.md)
 - [Go 网关分析](docs/architecture/go-analysis.md)
