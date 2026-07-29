@@ -319,3 +319,34 @@ func TestBus_EchoDedup(t *testing.T) {
 		t.Fatalf("echo should be deduped into one processing round, got %d", got)
 	}
 }
+
+func TestBus_NotifyAfterDelete(t *testing.T) {
+	calls := &callLog{}
+	b := newTestBus(calls)
+	defer b.Stop()
+	b.QuietWindow = 50 * time.Millisecond
+
+	var mu sync.Mutex
+	var notified []ChangeEvent
+	b.SetNotifier(func(events []ChangeEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		// 回调时 ① 必须已完成（先删后通知）
+		if calls.invalidateCount() == 0 {
+			t.Error("notifier fired before delete phase")
+		}
+		notified = append(notified, events...)
+	})
+
+	b.Enqueue(ev("/news/:id", "1"))
+	waitFor(t, "notify", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(notified) == 1
+	}, 2*time.Second)
+	mu.Lock()
+	defer mu.Unlock()
+	if notified[0].Pattern != "/news/:id" || len(notified[0].Params) != 1 {
+		t.Fatalf("unexpected notified events: %+v", notified)
+	}
+}

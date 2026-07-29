@@ -44,6 +44,10 @@ type RenderFunc func(template, path string) (html string, ok bool)
 // MaterializeFunc 执行 ② 的落盘（含上限治理）。
 type MaterializeFunc func(path, html string) error
 
+// NotifyFunc 在批次 ① 完成后回调（联动推送等；同步调用，须快速返回）。
+// events 为本批 ① 成功的变更（失败的已剔除并记日志）。
+type NotifyFunc func(events []ChangeEvent)
+
 // regenTask 是 ② 再生任务：一个具体页面 + 其 ① 完成时的代际。
 type regenTask struct {
 	template string
@@ -73,6 +77,7 @@ type Bus struct {
 	materialize MaterializeFunc
 
 	transport Transport // 跨实例传输（nil = 单实例；启动期 SetTransport 接线，之后只读）
+	notifier  NotifyFunc // flush ① 完成后的联动回调（nil = 无；启动期 SetNotifier 接线，之后只读）
 
 	mu      sync.Mutex            // 保护 pending/firstAt/lastAt
 	pending map[string]*ChangeEvent // 待处理批次（key = pattern + params，map 去重）
@@ -117,6 +122,12 @@ func (b *Bus) Stop() {
 func (b *Bus) SetTransport(t Transport) {
 	b.transport = t
 	t.Subscribe(b.Receive)
+}
+
+// SetNotifier 接入 flush 联动回调（启动期调用一次，之后只读）：
+// 每批 ① 完成后以本批成功的变更事件回调（SSE 推送等联动用）。
+func (b *Bus) SetNotifier(fn NotifyFunc) {
+	b.notifier = fn
 }
 
 // Enqueue 异步入队一次变更，永不阻塞调用方；接入 Transport 后同步广播到其他实例
@@ -261,6 +272,7 @@ func (b *Bus) flush() {
 	// ② 热门路径按页面去重后采集为再生任务，并记录其 ① 完成时的代际。
 	b.phaseMu.Lock()
 	var tasks []regenTask
+	var succeeded []ChangeEvent // ① 成功的事件（联动回调用）
 	seen := make(map[string]bool)
 	regenDeduped := 0
 	for _, ev := range events {
@@ -269,6 +281,7 @@ func (b *Bus) flush() {
 			log.Printf("event: invalidate %s params=%v failed: %v", ev.Pattern, ev.Params, err)
 			continue
 		}
+		succeeded = append(succeeded, *ev)
 		for _, path := range deleted {
 			b.epochSeq++
 			b.epoch[path] = b.epochSeq
@@ -292,6 +305,11 @@ func (b *Bus) flush() {
 	}
 	log.Printf("event: flushed %d changes (waited %s), %d regen targets, %d deduped",
 		len(events), waited.Truncate(time.Millisecond), len(tasks), regenDeduped)
+
+	// 联动回调（SSE 推送等）：① 已完成，受影响范围确定
+	if b.notifier != nil && len(succeeded) > 0 {
+		b.notifier(succeeded)
+	}
 
 	// ② 再生交给 worker：消费循环立即回到收集态（批间流水）。
 	if len(tasks) > 0 {
