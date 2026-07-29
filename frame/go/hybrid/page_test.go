@@ -450,6 +450,57 @@ func TestPage_UnauthenticatedRedirectCustomPath(t *testing.T) {
 	}
 }
 
+// 回归 #57：author 继承 reader 后，reader 不得访问声明 ["author"] 的页面（守卫穿透）。
+func TestPage_InheritedRoleGuard(t *testing.T) {
+	app, client, pending, server := setupTestApp(t)
+	if err := app.RegisterRole("reader", nil); err != nil {
+		t.Fatalf("register reader failed: %v", err)
+	}
+	if err := app.RegisterRole("author", []string{"reader"}); err != nil {
+		t.Fatalf("register author failed: %v", err)
+	}
+	mustPage(t, app, "/admin/:id", []string{"author"}, func(c *PageCtx) error {
+		return c.JSON(fiber.Map{"id": c.Param("id")})
+	})
+	server.App().Post("/test-login-reader", func(ctx *fiber.Ctx) error {
+		return server.GrantAuth(ctx, "reader")
+	})
+	server.App().Post("/test-login-author", func(ctx *fiber.Ctx) error {
+		return server.GrantAuth(ctx, "author")
+	})
+
+	// reader（父角色）访问 author 页面：403 原地错误页，不得 200 直出
+	readerCookie := loginAs(t, app, "/test-login-reader")
+	stop := resolveTasks(client, pending, "<html>forbidden</html>", nil)
+	req := httptest.NewRequest("GET", "/admin/42", nil)
+	req.AddCookie(readerCookie)
+	resp, err := app.Server().App().Test(req)
+	stop()
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != 403 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("reader must be forbidden on author page, got %d %s", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+
+	// author（声明角色）访问：200 正常渲染
+	authorCookie := loginAs(t, app, "/test-login-author")
+	stop2 := resolveTasks(client, pending, "<html>write</html>", nil)
+	defer stop2()
+	req2 := httptest.NewRequest("GET", "/admin/42", nil)
+	req2.AddCookie(authorCookie)
+	resp2, err := app.Server().App().Test(req2)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != 200 {
+		t.Fatalf("author should access author page, got %d", resp2.StatusCode)
+	}
+}
+
 func TestPage_ForbiddenRenders403Page(t *testing.T) {
 	app, client, pending, _ := setupGuardTestApp(t)
 	cookie := loginAs(t, app, "/test-login-guest")

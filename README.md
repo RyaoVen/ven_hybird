@@ -81,7 +81,7 @@ go run .           # :8080
 
 ## 鉴权与守卫
 
-角色支持继承（`RegisterRole("admin", []string{"user"})`），页面声明所需角色名，框架解析为等级做命中比较。
+角色支持继承（`RegisterRole("author", []string{"reader"})` = author 继承 reader）：页面声明所需角色名，命中语义为"用户 is-a 声明角色"——子角色可访问父角色的页面，父角色**不能**访问子角色的页面。
 
 **会话**：登录校验通过后 `Server.GrantAuth(ctx, role)` 生成会话令牌（24h TTL），下发双 cookie——`ven_auth`（HttpOnly，后端鉴权唯一依据）与 `ven_role`（JS 可读，前端守卫显示用）；`Server.RevokeAuth(ctx)` 注销。存储是 `auth.Backend` KV 接口，配 Redis 即跨实例共享。
 
