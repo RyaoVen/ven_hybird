@@ -3,3 +3,8 @@
 /frame/node/build/
 /frame/node/.generated/
 /frame/go/isr-pages/
+
+# IDE/工具本地产物
+.idea/
+.zcode/
+**/.claude/settings.local.json

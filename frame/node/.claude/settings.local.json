@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Read(//c/Users/25108/GolandProjects/ven_hybird/frame/**)",
-      "Read(//c/Users/25108/GolandProjects/ven_hybird/frame/build/**)"
-    ]
-  }
-}
