@@ -19,10 +19,11 @@ const (
 )
 
 // Backend 会话存储后端接口。
-// 预留 Redis 等外部存储的切换空间：实现此接口即可替换，鉴权逻辑不动。
+// 会话值为 role + userID（用户身份）；Redis 等外部存储自行处理序列化。
+// 实现此接口即可替换存储，鉴权逻辑不动。
 type Backend interface {
-	Set(token, role string, ttl time.Duration) error
-	Get(token string) (role string, ok bool)
+	Set(token, role, userID string, ttl time.Duration) error
+	Get(token string) (role, userID string, ok bool)
 	Delete(token string)
 }
 
@@ -38,24 +39,24 @@ func NewSessionStore(backend Backend, ttl time.Duration) *SessionStore {
 	return &SessionStore{backend: backend, ttl: ttl}
 }
 
-// Grant 为角色生成一个随机会话令牌并存入后端。
+// Grant 为角色生成一个随机会话令牌并存入后端，userID 为业务用户主键（可为空）。
 // 令牌为 24 字节加密随机数的 base64url 编码（32 字符，无填充）。
-func (s *SessionStore) Grant(role string) (string, error) {
+func (s *SessionStore) Grant(role, userID string) (string, error) {
 	buffer := make([]byte, 24)
 	if _, err := rand.Read(buffer); err != nil {
 		return "", err
 	}
 	token := base64.RawURLEncoding.EncodeToString(buffer)
-	if err := s.backend.Set(token, role, s.ttl); err != nil {
+	if err := s.backend.Set(token, role, userID, s.ttl); err != nil {
 		return "", err
 	}
 	return token, nil
 }
 
-// Role 查找令牌对应的角色，不存在或已过期返回 false。
-func (s *SessionStore) Role(token string) (string, bool) {
+// Lookup 查找令牌对应的会话（角色与用户身份），不存在或已过期返回 false。
+func (s *SessionStore) Lookup(token string) (role, userID string, ok bool) {
 	if token == "" {
-		return "", false
+		return "", "", false
 	}
 	return s.backend.Get(token)
 }
@@ -75,6 +76,7 @@ func (s *SessionStore) TTL() time.Duration {
 // memoryEntry 是内存后端里的会话条目。
 type memoryEntry struct {
 	role      string
+	userID    string
 	expiresAt time.Time
 }
 
@@ -89,21 +91,21 @@ func NewMemoryBackend() *MemoryBackend {
 	return &MemoryBackend{sessions: make(map[string]memoryEntry)}
 }
 
-// Set 存储 token → role，ttl 后过期。
-func (m *MemoryBackend) Set(token, role string, ttl time.Duration) error {
+// Set 存储 token → 会话（role + userID），ttl 后过期。
+func (m *MemoryBackend) Set(token, role, userID string, ttl time.Duration) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.sessions[token] = memoryEntry{role: role, expiresAt: time.Now().Add(ttl)}
+	m.sessions[token] = memoryEntry{role: role, userID: userID, expiresAt: time.Now().Add(ttl)}
 	return nil
 }
 
 // Get 查找 token，过期条目惰性删除并返回 false。
-func (m *MemoryBackend) Get(token string) (string, bool) {
+func (m *MemoryBackend) Get(token string) (string, string, bool) {
 	m.mu.RLock()
 	entry, ok := m.sessions[token]
 	m.mu.RUnlock()
 	if !ok {
-		return "", false
+		return "", "", false
 	}
 	if time.Now().After(entry.expiresAt) {
 		m.mu.Lock()
@@ -112,9 +114,9 @@ func (m *MemoryBackend) Get(token string) (string, bool) {
 			delete(m.sessions, token)
 		}
 		m.mu.Unlock()
-		return "", false
+		return "", "", false
 	}
-	return entry.role, true
+	return entry.role, entry.userID, true
 }
 
 // Delete 删除 token。

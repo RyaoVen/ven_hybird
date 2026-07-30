@@ -64,12 +64,14 @@ a.Post("/posts", []string{"author"}, func(c *hybrid.ApiCtx) error {
 })
 a.Put("/posts/:id", []string{"author"}, h)    // c.Param / c.Query / c.Bind / c.Body 可用
 a.Delete("/posts/:id", []string{"author"}, h)
+// handler 里 c.User() → (userID, role, ok) 取当前登录身份（评论/点赞/归属按人记时用）
 
 // 登录：自己校验用户凭据，通过后调放行函数下发双 cookie（ven_auth/ven_role）
 server := a.Server()
 server.App().Post("/auth/login", func(ctx *fiber.Ctx) error {
-    // ...校验用户名密码（接你的用户存储）...
-    if err := server.GrantAuth(ctx, "author"); err != nil { /* 角色未注册 */ }
+    // ...校验用户名密码（接你的用户存储），拿到业务用户主键 user.ID...
+    if err := server.GrantAuthWithUser(ctx, "author", user.ID); err != nil { /* 角色未注册 */ }
+    // 不需要身份时用 server.GrantAuth(ctx, "author")（等价 userID 为空）
     return ctx.JSON(fiber.Map{"ok": true})
 })
 server.App().Post("/auth/logout", func(ctx *fiber.Ctx) error { server.RevokeAuth(ctx); return ctx.SendStatus(204) })

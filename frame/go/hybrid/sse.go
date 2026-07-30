@@ -104,7 +104,7 @@ func (a *App) pageData(pattern string, params, query map[string]string) (any, bo
 	if !ok {
 		return nil, false
 	}
-	c := newStaticPageCtx(params, query)
+	c := newStaticPageCtx(params, query, a.server)
 	if err := handler(c); err != nil {
 		log.Printf("sse: data func %s failed: %v", pattern, err)
 		return nil, false

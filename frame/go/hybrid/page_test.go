@@ -67,6 +67,48 @@ func TestPage_DataOnly(t *testing.T) {
 	}
 }
 
+func TestPageCtx_User(t *testing.T) {
+	app, _, _, server := setupTestApp(t)
+	if err := app.RegisterRole("guest", nil); err != nil {
+		t.Fatalf("register guest failed: %v", err)
+	}
+	mustPage(t, app, "/test/:id", nil, func(c *PageCtx) error {
+		userID, role, ok := c.User()
+		return c.JSON(fiber.Map{"id": c.Param("id"), "userID": userID, "role": role, "ok": ok})
+	})
+	server.App().Post("/test-login-user", func(ctx *fiber.Ctx) error {
+		return server.GrantAuthWithUser(ctx, "guest", "u-9")
+	})
+
+	// data-only 取数带会话 cookie → JSON 中携身份
+	cookie := loginAs(t, app, "/test-login-user")
+	req := httptest.NewRequest("GET", "/test/42", nil)
+	req.Header.Set("X-Ven-Data-Only", "true")
+	req.AddCookie(cookie)
+	resp, err := app.Server().App().Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	for _, want := range []string{`"userID":"u-9"`, `"role":"guest"`, `"ok":true`} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("expected %s in body, got %s", want, body)
+		}
+	}
+
+	// 无 cookie → ok=false
+	req2 := httptest.NewRequest("GET", "/test/42", nil)
+	req2.Header.Set("X-Ven-Data-Only", "true")
+	resp2, err := app.Server().App().Test(req2)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	body2, _ := io.ReadAll(resp2.Body)
+	if !strings.Contains(string(body2), `"ok":false`) {
+		t.Fatalf("expected ok=false without cookie, got %s", body2)
+	}
+}
+
 func TestPage_PublicSkipsCookieAuth(t *testing.T) {
 	// 无 cookie 时公开页面仍应放行
 	app, _, _, _ := setupTestApp(t)

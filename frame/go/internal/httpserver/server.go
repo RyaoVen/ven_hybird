@@ -187,11 +187,18 @@ func (s *Server) ResolveRoles(roles []string) ([]int64, error) {
 
 // GrantAuth 放行函数：为已注册的角色生成会话令牌并下发鉴权 cookie。
 // 业务层在用户校验（登录）通过后调用；未注册的角色拒绝放行。
+// 会话不携带用户身份（等价于 GrantAuthWithUser 的 userID 为空）。
 func (s *Server) GrantAuth(ctx *fiber.Ctx, role string) error {
+	return s.GrantAuthWithUser(ctx, role, "")
+}
+
+// GrantAuthWithUser 与 GrantAuth 行为一致（双 cookie、同 TTL），
+// 会话额外存 userID（业务用户主键字符串），供 CurrentUser 解析"谁在调用"。
+func (s *Server) GrantAuthWithUser(ctx *fiber.Ctx, role, userID string) error {
 	if _, err := s.auth.Resolve([]string{role}); err != nil {
 		return err
 	}
-	token, err := s.sessions.Grant(role)
+	token, err := s.sessions.Grant(role, userID)
 	if err != nil {
 		return err
 	}
@@ -208,7 +215,15 @@ func (s *Server) RevokeAuth(ctx *fiber.Ctx) {
 // CookieAuth 从请求的 ven_auth cookie 中解析用户角色：
 // 拿令牌到会话缓存里比对，不存在或已过期返回 false。
 func (s *Server) CookieAuth(ctx *fiber.Ctx) (role string, ok bool) {
-	return s.sessions.Role(ctx.Cookies(auth.AuthCookieName))
+	role, _, ok = s.sessions.Lookup(ctx.Cookies(auth.AuthCookieName))
+	return role, ok
+}
+
+// CurrentUser 从请求的 ven_auth cookie 解析当前会话身份（用户主键与角色）；
+// 未登录、过期或令牌无效时 ok=false。
+func (s *Server) CurrentUser(ctx *fiber.Ctx) (userID, role string, ok bool) {
+	role, userID, ok = s.sessions.Lookup(ctx.Cookies(auth.AuthCookieName))
+	return userID, role, ok
 }
 
 // CheckAuth 检查用户角色是否满足页面所需的任意等级。

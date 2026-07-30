@@ -34,7 +34,7 @@ func (a *App) StaticPage(dynamicUrl string, maxPages int, smartLoad bool, h Page
 	a.staticHandlers[dynamicUrl] = h
 
 	handler := func(ctx *fiber.Ctx) error {
-		c := newPageCtx(ctx)
+		c := newPageCtx(ctx, a.server)
 		if err := h(c); err != nil {
 			return err
 		}
@@ -84,7 +84,7 @@ func (a *App) renderStatic(template string, path string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	c := newStaticPageCtx(params, map[string]string{})
+	c := newStaticPageCtx(params, map[string]string{}, a.server)
 	if err := handler(c); err != nil {
 		log.Printf("isr: regen %s handler failed: %v", path, err)
 		return "", false

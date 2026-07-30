@@ -71,19 +71,21 @@ go run .           # :8080
 
 ### PageCtx（页面 handler，数据被截流）
 
-`Param(key)` / `Query(key)` / `JSON(data)` 设置数据 / `Render()` 强制 SSR / `NotFound()` 404。
+`Param(key)` / `Query(key)` / `JSON(data)` 设置数据 / `Render()` 强制 SSR / `NotFound()` 404 / `User()` 取当前登录身份。
 
 框架按请求头决定输出：`X-Ven-Data-Only: true` → 裸 JSON（SPA 取数）；否则 SSR 渲染整页 HTML。
 
 ### ApiCtx（API handler，直接响应）
 
-`Param(key)` / `Query(key)` / `Bind(&v)` 解析 JSON body / `Body()` 原始请求体 / `JSON(status, data)` / `Error(status, message)`。
+`Param(key)` / `Query(key)` / `Bind(&v)` 解析 JSON body / `Body()` 原始请求体 / `JSON(status, data)` / `Error(status, message)` / `User()` 取当前登录身份。
 
 ## 鉴权与守卫
 
 角色支持继承（`RegisterRole("author", []string{"reader"})` = author 继承 reader）：页面声明所需角色名，命中语义为"用户 is-a 声明角色"——子角色可访问父角色的页面，父角色**不能**访问子角色的页面。
 
 **会话**：登录校验通过后 `Server.GrantAuth(ctx, role)` 生成会话令牌（24h TTL），下发双 cookie——`ven_auth`（HttpOnly，后端鉴权唯一依据）与 `ven_role`（JS 可读，前端守卫显示用）；`Server.RevokeAuth(ctx)` 注销。存储是 `auth.Backend` KV 接口，配 Redis 即跨实例共享。
+
+**用户身份**：需要"谁在调用"时用 `Server.GrantAuthWithUser(ctx, role, userID)` 放行（会话额外存业务用户主键；`GrantAuth` 等价 userID 为空）。handler 里 `ApiCtx.User()` / `PageCtx.User()` → `(userID, role, ok)`，底层是 `Server.CurrentUser(ctx)`。Redis 会话值格式升级为 `role\x1fuserID` 且向后兼容解析（旧格式纯 role 值照常读出、userID 为空），不换 key 前缀、在线会话零丢失。
 
 **守卫行为**：
 
