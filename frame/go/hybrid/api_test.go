@@ -94,6 +94,47 @@ func TestApi_AuthFlow(t *testing.T) {
 	}
 }
 
+func TestApiCtx_User(t *testing.T) {
+	app, _, _, server := setupTestApp(t)
+	if err := app.RegisterRole("guest", nil); err != nil {
+		t.Fatalf("register guest failed: %v", err)
+	}
+	if err := app.Get("/whoami", nil, func(c *ApiCtx) error {
+		userID, role, ok := c.User()
+		return c.JSON(200, fiber.Map{"userID": userID, "role": role, "ok": ok})
+	}); err != nil {
+		t.Fatalf("register api failed: %v", err)
+	}
+	server.App().Post("/test-login-user", func(ctx *fiber.Ctx) error {
+		return server.GrantAuthWithUser(ctx, "guest", "u-7")
+	})
+
+	// 未登录 → ok=false
+	resp, err := app.Server().App().Test(httptest.NewRequest("GET", "/api/whoami", nil))
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `"ok":false`) {
+		t.Fatalf("expected ok=false without cookie, got %s", body)
+	}
+
+	// GrantAuthWithUser 登录 → 取回一致的 userID/role
+	cookie := loginAs(t, app, "/test-login-user")
+	req := httptest.NewRequest("GET", "/api/whoami", nil)
+	req.AddCookie(cookie)
+	resp2, err := app.Server().App().Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	body2, _ := io.ReadAll(resp2.Body)
+	for _, want := range []string{`"userID":"u-7"`, `"role":"guest"`, `"ok":true`} {
+		if !strings.Contains(string(body2), want) {
+			t.Fatalf("expected %s in body, got %s", want, body2)
+		}
+	}
+}
+
 func TestApiCtx_BindAndBody(t *testing.T) {
 	app, _, _, _ := setupTestApp(t)
 	if err := app.Post("/echo/:name", nil, func(c *ApiCtx) error {

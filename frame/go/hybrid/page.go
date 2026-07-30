@@ -72,7 +72,7 @@ func (a *App) Page(pattern string, role []string, h PageHandler) error {
 		}
 
 		// 2. 执行用户 handler
-		c := newPageCtx(ctx)
+		c := newPageCtx(ctx, a.server)
 		if err := h(c); err != nil {
 			return err
 		}

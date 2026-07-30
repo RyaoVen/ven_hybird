@@ -52,7 +52,7 @@ func (a *App) registerAPI(method, pattern string, roles []string, h ApiHandler) 
 			}
 			return ctx.Status(status).JSON(fiber.Map{"error": reason})
 		}
-		return h(newApiCtx(ctx))
+		return h(newApiCtx(ctx, a.server))
 	})
 	return nil
 }

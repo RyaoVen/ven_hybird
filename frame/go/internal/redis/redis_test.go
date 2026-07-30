@@ -33,25 +33,40 @@ func TestSessionBackend_CRUD(t *testing.T) {
 	mr, client := newMiniredis(t)
 	backend := NewSessionBackend(client)
 
-	if err := backend.Set("token-1", "admin", time.Minute); err != nil {
+	if err := backend.Set("token-1", "admin", "u-100", time.Minute); err != nil {
 		t.Fatalf("set failed: %v", err)
 	}
-	role, ok := backend.Get("token-1")
-	if !ok || role != "admin" {
-		t.Fatalf("expected admin, got %q ok=%v", role, ok)
+	role, userID, ok := backend.Get("token-1")
+	if !ok || role != "admin" || userID != "u-100" {
+		t.Fatalf("expected (admin, u-100), got (%q, %q) ok=%v", role, userID, ok)
 	}
 	// TTL 过期
 	mr.FastForward(2 * time.Minute)
-	if _, ok := backend.Get("token-1"); ok {
+	if _, _, ok := backend.Get("token-1"); ok {
 		t.Fatal("expected session expired after ttl")
 	}
 	// 删除
-	if err := backend.Set("token-2", "guest", time.Minute); err != nil {
+	if err := backend.Set("token-2", "guest", "", time.Minute); err != nil {
 		t.Fatalf("set failed: %v", err)
 	}
 	backend.Delete("token-2")
-	if _, ok := backend.Get("token-2"); ok {
+	if _, _, ok := backend.Get("token-2"); ok {
 		t.Fatal("expected session deleted")
+	}
+}
+
+// 兼容性：旧格式会话值（纯 role、无分隔符）按 role/userID="" 读，不丢会话。
+func TestSessionBackend_LegacyValueCompatible(t *testing.T) {
+	_, client := newMiniredis(t)
+	backend := NewSessionBackend(client)
+
+	// 模拟升级前写入的旧格式值
+	if err := client.Set(context.Background(), sessionKey("legacy"), "admin", time.Minute).Err(); err != nil {
+		t.Fatalf("seed legacy value failed: %v", err)
+	}
+	role, userID, ok := backend.Get("legacy")
+	if !ok || role != "admin" || userID != "" {
+		t.Fatalf("expected legacy (admin, \"\"), got (%q, %q) ok=%v", role, userID, ok)
 	}
 }
 
@@ -60,10 +75,10 @@ func TestSessionBackend_FailOpen(t *testing.T) {
 	backend := NewSessionBackend(client)
 	mr.Close() // Redis 宕机
 
-	if _, ok := backend.Get("token-1"); ok {
+	if _, _, ok := backend.Get("token-1"); ok {
 		t.Fatal("get should fail-open to false")
 	}
-	if err := backend.Set("token-1", "admin", time.Minute); err == nil {
+	if err := backend.Set("token-1", "admin", "", time.Minute); err == nil {
 		t.Fatal("set should report error (login path sees failure)")
 	}
 	backend.Delete("token-1") // 不 panic 即可
