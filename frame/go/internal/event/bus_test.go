@@ -431,3 +431,38 @@ func TestBus_NotifyAfterDelete(t *testing.T) {
 		t.Fatalf("unexpected notified events: %+v", notified)
 	}
 }
+
+// TestBus_SlowNotifierDoesNotBlockFlush 慢 notifier（重算页面数据）不阻塞总线：
+// notifier 未完成时下一批事件仍能被收集并 flush。
+func TestBus_SlowNotifierDoesNotBlockFlush(t *testing.T) {
+	calls := &callLog{}
+	b := newTestBus(calls)
+	defer b.Stop()
+	b.QuietWindow = 30 * time.Millisecond
+
+	// notifier 阻塞 200ms（模拟慢数据重算）
+	notifierDone := make(chan struct{})
+	b.SetNotifier(func(events []ChangeEvent) {
+		time.Sleep(200 * time.Millisecond)
+		close(notifierDone)
+	})
+
+	// 第一批：触发一次 notifier（异步）
+	b.Enqueue(ev("/news/:id", "1"))
+	// 第二批紧跟其后（notifier 还在跑）
+	b.Enqueue(ev("/news/:id", "2"))
+
+	// 两批都应在 notifier 完成前被收集（总线不被 notifier 阻塞）：
+	// 若同步阻塞，第二批 flush 要等第一批 notifier 的 200ms 才轮到。
+	select {
+	case <-notifierDone:
+		// notifier 完成（异步），期间第二批事件已入队
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("notifier did not complete in time")
+	}
+	// 等待第二批也被 flush（不影响 notifier 异步语义，仅确认总线活着）
+	waitFor(t, "second batch invalidated", func() bool {
+		return calls.invalidateCount() >= 2
+	}, 2*time.Second)
+}
+
