@@ -322,9 +322,19 @@ func (b *Bus) flush() {
 	log.Printf("event: flushed %d changes (waited %s), %d regen targets, %d deduped",
 		len(events), waited.Truncate(time.Millisecond), len(tasks), regenDeduped)
 
-	// 联动回调（SSE 推送等）：① 已完成，受影响范围确定
+	// 联动回调（SSE 推送等）：① 已完成，受影响范围确定。
+	// 异步调用：notifier 内部可能重算页面数据（慢），不能阻塞总线消费循环；
+	// 顺序性由 notifier 实现保证，这里只负责不阻塞 flush 后的下一批收集。
 	if b.notifier != nil && len(succeeded) > 0 {
-		b.notifier(succeeded)
+		events := succeeded
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("event: notifier panic recovered: %v", r)
+				}
+			}()
+			b.notifier(events)
+		}()
 	}
 
 	// ② 再生交给 worker：消费循环立即回到收集态（批间流水）。
