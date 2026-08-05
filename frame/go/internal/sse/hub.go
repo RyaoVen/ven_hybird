@@ -23,6 +23,10 @@ import (
 // sendBuffer 是单连接的消息缓冲（满即丢，见 Conn.Send）。
 const sendBuffer = 8
 
+// defaultMaxConns 是 SSE 连接表容量上限（config.Load 默认值与此一致；
+// 字面量构造 Hub 未设 MaxConns 时保留此值）。
+const defaultMaxConns = 1000
+
 // pushEventName 是 SSE 事件名（前端 addEventListener 同名订阅）。
 const pushEventName = "page-data"
 
@@ -66,6 +70,10 @@ type Hub struct {
 	conns  map[*Conn]struct{}
 	closed bool
 
+	// MaxConns 是连接数上限：超出时新订阅被拒绝（预关闭连接，写端立即退出），
+	// 不影响已有连接；防 conns map 无界增长。<= 0 = 不设上限。
+	MaxConns int
+
 	dataFn DataFunc
 	decls  map[string]*isr.Declaration // pattern → 声明缓存（事件范围匹配用）
 }
@@ -73,13 +81,14 @@ type Hub struct {
 // New 创建推送 Hub。dataFn 由 hybrid 接线（复用页面数据函数）。
 func New(dataFn DataFunc) *Hub {
 	return &Hub{
-		conns:  make(map[*Conn]struct{}),
-		dataFn: dataFn,
-		decls:  make(map[string]*isr.Declaration),
+		conns:    make(map[*Conn]struct{}),
+		MaxConns: defaultMaxConns,
+		dataFn:   dataFn,
+		decls:    make(map[string]*isr.Declaration),
 	}
 }
 
-// Subscribe 注册一条连接（Hub 已关停时返回预关闭连接，写端立即退出）。
+// Subscribe 注册一条连接（Hub 已关停或连接数达上限时返回预关闭连接，写端立即退出）。
 func (h *Hub) Subscribe(pattern, path string, params, query map[string]string) *Conn {
 	conn := &Conn{
 		Pattern: pattern,
@@ -92,6 +101,13 @@ func (h *Hub) Subscribe(pattern, path string, params, query map[string]string) *
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
+		conn.close()
+		return conn
+	}
+	// 连接数上限：拒绝新订阅（预关闭），已有连接不受影响——防 conns map 无界增长
+	if h.MaxConns > 0 && len(h.conns) >= h.MaxConns {
+		h.mu.Unlock()
+		log.Printf("sse: conn limit reached (%d), rejected subscribe %s", h.MaxConns, path)
 		conn.close()
 		return conn
 	}

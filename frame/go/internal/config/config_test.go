@@ -117,3 +117,44 @@ func TestLoad_StaleWindowNegativeRejected(t *testing.T) {
 		t.Fatalf("stale 窗口 0 应合法（关闭兜底），got cfg=%+v err=%v", cfg, err)
 	}
 }
+
+// 内存上限（事件总线 pending / SSE 连接数）默认有界，按环境变量覆盖。
+func TestLoad_MemoryBoundsConfig(t *testing.T) {
+	t.Setenv("VEN_INTERNAL_TOKEN", testInternalToken)
+	t.Setenv("VEN_EVENT_MAX_PENDING", "")
+	t.Setenv("VEN_SSE_MAX_CONNS", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if cfg.EventMaxPending != 1024 {
+		t.Errorf("EventMaxPending 默认应为 1024，got %d", cfg.EventMaxPending)
+	}
+	if cfg.SSEMaxConns != 1000 {
+		t.Errorf("SSEMaxConns 默认应为 1000，got %d", cfg.SSEMaxConns)
+	}
+
+	t.Setenv("VEN_EVENT_MAX_PENDING", "256")
+	t.Setenv("VEN_SSE_MAX_CONNS", "500")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if cfg.EventMaxPending != 256 || cfg.SSEMaxConns != 500 {
+		t.Errorf("环境变量未生效: EventMaxPending=%d SSEMaxConns=%d", cfg.EventMaxPending, cfg.SSEMaxConns)
+	}
+}
+
+// 内存上限必须为正：0 拒绝启动（无上限 = 无界增长，正是治理对象）。
+func TestLoad_MemoryBoundsZeroRejected(t *testing.T) {
+	t.Setenv("VEN_INTERNAL_TOKEN", testInternalToken)
+	t.Setenv("VEN_EVENT_MAX_PENDING", "0")
+	if _, err := Load(); err == nil {
+		t.Fatal("VEN_EVENT_MAX_PENDING=0 应拒绝启动")
+	}
+	t.Setenv("VEN_EVENT_MAX_PENDING", "1024")
+	t.Setenv("VEN_SSE_MAX_CONNS", "0")
+	if _, err := Load(); err == nil {
+		t.Fatal("VEN_SSE_MAX_CONNS=0 应拒绝启动")
+	}
+}

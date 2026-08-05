@@ -32,6 +32,8 @@ type Config struct {
 	PageCacheStaleWindow time.Duration // 过期缓存保留窗口（stale-while-revalidate；0 = 关闭），环境变量: VEN_PAGE_CACHE_STALE_WINDOW
 	NodeCircuitThreshold int           // Node 熔断连续失败阈值，环境变量: VEN_NODE_CIRCUIT_THRESHOLD
 	NodeCircuitHalfOpen  time.Duration // Node 熔断半开探测间隔，环境变量: VEN_NODE_CIRCUIT_HALF_OPEN
+	EventMaxPending      int           // 事件总线待处理批次容量上限（防内存无界增长；超出丢弃新事件，允许丢），环境变量: VEN_EVENT_MAX_PENDING
+	SSEMaxConns          int           // SSE 实时推送最大连接数（超出拒绝新订阅，预关闭连接），环境变量: VEN_SSE_MAX_CONNS
 }
 
 // Load 从环境变量加载配置并校验合法性。
@@ -59,6 +61,8 @@ func Load() (Config, error) {
 		PageCacheStaleWindow: duration("VEN_PAGE_CACHE_STALE_WINDOW", 5*time.Minute),
 		NodeCircuitThreshold: integer("VEN_NODE_CIRCUIT_THRESHOLD", 5),
 		NodeCircuitHalfOpen:  duration("VEN_NODE_CIRCUIT_HALF_OPEN", 10*time.Second),
+		EventMaxPending:      integer("VEN_EVENT_MAX_PENDING", 1024),
+		SSEMaxConns:          integer("VEN_SSE_MAX_CONNS", 1000),
 	}
 
 	// 内部令牌是内部通道（渲染回调/页面模式拉取）的唯一凭据，安全关键：
@@ -104,6 +108,13 @@ func Load() (Config, error) {
 	// stale 保留窗口不能为负（0 = 关闭 stale 兜底，合法）
 	if config.PageCacheStaleWindow < 0 {
 		return Config{}, fmt.Errorf("VEN_PAGE_CACHE_STALE_WINDOW must not be negative")
+	}
+	// 内存上限必须为正：无上限 = 无界增长（bus pending / SSE 连接表正是本次治理对象）
+	if config.EventMaxPending < 1 {
+		return Config{}, fmt.Errorf("VEN_EVENT_MAX_PENDING must be greater than zero")
+	}
+	if config.SSEMaxConns < 1 {
+		return Config{}, fmt.Errorf("VEN_SSE_MAX_CONNS must be greater than zero")
 	}
 
 	return config, nil
