@@ -62,6 +62,13 @@ func (a *App) SetLoginRedirect(path string) {
 	a.loginRedirect = path
 }
 
+// SetVisitRecorder 设置页面访问统计埋点回调（nil = 关闭埋点）。
+// 回调在页面请求的 goroutine 中同步调用，必须快速返回；panic 由框架兜底，不影响页面响应。
+// 计数规则：仅 GET 页面请求（跳过 data-only 取数与非页面前缀），ISR 直发同样计数。
+func (a *App) SetVisitRecorder(fn func(path string)) {
+	a.server.SetVisitRecorder(fn)
+}
+
 // RegisterRole 注册一个角色（权限等级），可指定继承的父角色。
 // 需在 Page() 调用前完成角色注册，否则 Page() 解析 role 会失败。
 func (a *App) RegisterRole(role string, parents []string) error {
