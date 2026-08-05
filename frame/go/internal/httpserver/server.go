@@ -42,6 +42,9 @@ type Server struct {
 
 	staticDecls        map[string]*isr.Declaration // StaticPage 声明（按模板字符串）
 	fallbackRegistered bool                        // 页面兜底路由是否已注册（RegisterPageFallback 幂等标记）
+
+	visitMu  sync.RWMutex      // 保护 visitRec（埋点回调启动期注入，运行期只读）
+	visitRec func(path string) // 访问统计埋点回调（业务层注入；nil = 关闭埋点）
 }
 
 // 默认值：Config 由字面量构造（测试）未设这些字段时回退到与 config.Load 相同的默认。
@@ -124,6 +127,9 @@ func New(
 		eventTransport: eventTransport,
 		staticDecls:    make(map[string]*isr.Declaration),
 	}
+	// 访问统计埋点：最外层 Use，先于 ISR 物化直发与业务路由（ISR 直发也计数）。
+	// 回调此时尚未注入（启动期由 hybrid.App.SetVisitRecorder 注入），请求期判 nil 即可。
+	app.Use(s.visitTracking())
 	// 启动重载 ISR：变更事件不做持久化，停机期间漏收的失效无补偿通道，
 	// 重启不沿用上次运行的物化产物（清空后懒回源重新物化）
 	s.reloadISR()

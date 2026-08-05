@@ -641,3 +641,50 @@ func TestPage_HeadRequest(t *testing.T) {
 		t.Fatalf("expected 200 for HEAD, got %d", resp.StatusCode)
 	}
 }
+
+// TestApp_SetVisitRecorder 验证 hybrid.App 公开埋点注册：GET 页面请求计数，
+// data-only 取数跳过（避免 SPA 导航双埋点）。
+func TestApp_SetVisitRecorder(t *testing.T) {
+	app, client, pending, _ := setupTestApp(t)
+	var got []string
+	app.SetVisitRecorder(func(path string) { got = append(got, path) })
+	mustPage(t, app, "/test/:id", nil, func(c *PageCtx) error {
+		return c.JSON(fiber.Map{"id": c.Param("id")})
+	})
+
+	// 正常页面请求（SSR 导航）：计数
+	go func() {
+		task := <-client.submitted
+		pending.Resolve(ssr.RenderCallback{
+			HookID:       task.HookID,
+			RequestRoute: task.RequestRoute,
+			MatchedRoute: "/test/:id",
+			HTML:         "<html>test</html>",
+		})
+	}()
+	req := httptest.NewRequest("GET", "/test/42", nil)
+	resp, err := app.Server().App().Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if len(got) != 1 || got[0] != "/test/42" {
+		t.Fatalf("expected recorded [/test/42], got %v", got)
+	}
+
+	// data-only 取数（SPA 导航）：不重复计数（不提交 SSR 任务，直接 JSON 返回）
+	req = httptest.NewRequest("GET", "/test/43", nil)
+	req.Header.Set("X-Ven-Data-Only", "true")
+	resp, err = app.Server().App().Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if len(got) != 1 {
+		t.Fatalf("data-only should not be counted, got %v", got)
+	}
+}
