@@ -35,6 +35,39 @@ func TestEventTransport_Roundtrip(t *testing.T) {
 	}
 }
 
+// TestEventTransport_SubscriberPanicRecovered 订阅者 handler panic 被兜底：
+// 订阅协程不退出，后续消息照常接收。
+func TestEventTransport_SubscriberPanicRecovered(t *testing.T) {
+	_, client := newMiniredis(t)
+	transport := NewEventTransport(client)
+
+	var mu sync.Mutex
+	received := 0
+	transport.Subscribe(func(ev event.ChangeEvent) {
+		mu.Lock()
+		received++
+		first := received == 1
+		mu.Unlock()
+		if first {
+			panic("handler boom")
+		}
+	})
+	time.Sleep(50 * time.Millisecond) // 等订阅建立
+
+	for i := 0; i < 2; i++ {
+		if err := transport.Publish(event.ChangeEvent{Pattern: "/news/:id", Params: []string{"1"}, EnqueuedAt: time.Now()}); err != nil {
+			t.Fatalf("publish failed: %v", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if received != 2 {
+		t.Fatalf("expected 2 received events (subscriber survived panic), got %d", received)
+	}
+}
+
 // TestEventTransport_CrossBus 集成验证：总线 A 的 DataChange 经 Redis 传播到总线 B，
 // B 在静默窗口后走自己的失效；回声被 A 的去重吞掉（各处理一次）。
 func TestEventTransport_CrossBus(t *testing.T) {

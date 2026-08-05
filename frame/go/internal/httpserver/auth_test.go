@@ -83,6 +83,54 @@ func TestServer_GrantAuth_LegacyEmptyUser(t *testing.T) {
 	}
 }
 
+// 鉴权 cookie 标志：ven_auth 必须 HttpOnly；ven_role 刻意非 HttpOnly（前端路由守卫 JS 读取）；
+// Secure 标志随 VEN_COOKIE_SECURE 配置（默认 true，本地 http 开发置 false）。
+func TestServer_AuthCookieFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		secure     bool
+		wantSecure bool
+	}{
+		{"secure on", true, true},
+		{"secure off", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Config{NodeSubmitTimeout: time.Second, RenderTimeout: time.Second, CookieSecure: tc.secure}
+			s := New(cfg, stubClient{}, ssr.NewPendingRegistry(4), stubHookIDs{}, pagepattern.NewValidator(nil))
+			if err := s.RegisterRole("guest", nil); err != nil {
+				t.Fatalf("register guest failed: %v", err)
+			}
+			s.App().Post("/login", func(ctx *fiber.Ctx) error { return s.GrantAuth(ctx, "guest") })
+
+			resp, err := s.App().Test(httptest.NewRequest("POST", "/login", nil))
+			if err != nil {
+				t.Fatalf("login failed: %v", err)
+			}
+			var authCookie, roleCookie *http.Cookie
+			for _, c := range resp.Cookies() {
+				switch c.Name {
+				case auth.AuthCookieName:
+					authCookie = c
+				case auth.RoleCookieName:
+					roleCookie = c
+				}
+			}
+			if authCookie == nil || roleCookie == nil {
+				t.Fatalf("expected both cookies, got auth=%v role=%v", authCookie != nil, roleCookie != nil)
+			}
+			if !authCookie.HttpOnly {
+				t.Error("ven_auth 必须 HttpOnly")
+			}
+			if roleCookie.HttpOnly {
+				t.Error("ven_role 不得 HttpOnly（前端 JS 需读取角色）")
+			}
+			if authCookie.Secure != tc.wantSecure || roleCookie.Secure != tc.wantSecure {
+				t.Errorf("Secure 标志不符: ven_auth=%v ven_role=%v, want %v", authCookie.Secure, roleCookie.Secure, tc.wantSecure)
+			}
+		})
+	}
+}
+
 func TestServer_CurrentUser_Invalid(t *testing.T) {
 	s := newAuthTestServer(t, func(s *Server, ctx *fiber.Ctx) error {
 		return s.GrantAuthWithUser(ctx, "guest", "u-100")

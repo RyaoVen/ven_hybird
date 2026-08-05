@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"ven_hybird/internal/auth"
+	"ven_hybird/internal/circuitbreaker"
 	"ven_hybird/internal/config"
 	"ven_hybird/internal/event"
 	"ven_hybird/internal/isr"
@@ -17,6 +18,7 @@ import (
 	"ven_hybird/internal/ssr"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/recover"
 )
 
 // Server 是 HTTP 服务器核心结构体。
@@ -26,10 +28,11 @@ type Server struct {
 	ssr       ssr.Client           // SSR 渲染客户端
 	pending   *ssr.PendingRegistry // pending 任务注册中心
 	hookIDs   ssr.HookIDGenerator  // HookID 生成器
-	auth      *auth.Registry       // 权限等级注册表
-	sessions  *auth.SessionStore   // 会话存储（token → role）
-	pageCache *pagecache.Store     // 页面渲染结果缓存
-	isrStore  *isr.Store           // ISR 文件层
+	auth      *auth.Registry           // 权限等级注册表
+	sessions  *auth.SessionStore       // 会话存储（token → role）
+	pageCache *pagecache.Store         // 页面渲染结果缓存
+	isrStore  *isr.Store               // ISR 文件层
+	breaker   *circuitbreaker.Breaker  // Node 熔断器（连续失败快速失败 + 半开探测）
 
 	eventTransport event.Transport // 事件跨实例传输（nil = 单实例；Redis 配置后由 hybrid 挂到事件总线）
 
@@ -43,8 +46,10 @@ type Server struct {
 
 // 默认值：Config 由字面量构造（测试）未设这些字段时回退到与 config.Load 相同的默认。
 const (
-	defaultSessionTTL   = 24 * time.Hour // 会话有效期
-	defaultPageCacheTTL = time.Minute    // 页面缓存有效期
+	defaultSessionTTL       = 24 * time.Hour   // 会话有效期
+	defaultPageCacheTTL     = time.Minute      // 页面缓存有效期
+	defaultCircuitThreshold = 5                // Node 熔断连续失败阈值
+	defaultCircuitHalfOpen  = 10 * time.Second // Node 熔断半开探测间隔
 )
 
 // New 创建并初始化 HTTP 服务器实例。
@@ -63,6 +68,12 @@ func New(
 	if cfg.PageCacheTTL <= 0 {
 		cfg.PageCacheTTL = defaultPageCacheTTL
 	}
+	if cfg.NodeCircuitThreshold < 1 {
+		cfg.NodeCircuitThreshold = defaultCircuitThreshold
+	}
+	if cfg.NodeCircuitHalfOpen <= 0 {
+		cfg.NodeCircuitHalfOpen = defaultCircuitHalfOpen
+	}
 	app := fiber.New(fiber.Config{
 		AppName:               "VenHybird",
 		ReadTimeout:           60 * time.Second, // 大于浏览器 keep-alive 空闲，消除 408 噪音
@@ -78,6 +89,9 @@ func New(
 			})
 		},
 	})
+	// 最外层 Recover：handler/中间件 panic 转为 error 走全局 ErrorHandler（500 + 日志），不崩进程。
+	// 必须在 requestLogger 之前注册，才能兜住整条中间件链的 panic。
+	app.Use(recover.New())
 	app.Use(requestLogger())
 
 	// 会话/页面缓存后端：配置 Redis 则跨实例共享，连接失败回退内存（fail-open）
@@ -104,8 +118,9 @@ func New(
 		auth:           auth.NewRegistry(),
 		sessions:       auth.NewSessionStore(sessionBackend, cfg.SessionTTL),
 		patterns:       patterns,
-		pageCache:      pagecache.NewStore(pageBackend, cfg.PageCacheTTL),
+		pageCache:      pagecache.NewStore(pageBackend, cfg.PageCacheTTL, cfg.PageCacheStaleWindow),
 		isrStore:       isr.NewStore(cfg.IsrDir, cfg.IsrEnabled),
+		breaker:        circuitbreaker.New(cfg.NodeCircuitThreshold, cfg.NodeCircuitHalfOpen),
 		eventTransport: eventTransport,
 		staticDecls:    make(map[string]*isr.Declaration),
 	}
@@ -171,6 +186,10 @@ func (s *Server) refetchPatterns() bool {
 		return false
 	}
 	s.patterns = validator
+	// 持久化最近一次成功拉取的 pattern：下次启动 Node 不可达时可回退
+	if perr := pagepattern.Save(validator, s.config.PatternsFile); perr != nil {
+		log.Printf("persist refetched page patterns failed: %v", perr)
+	}
 	log.Printf("refetched page patterns from node")
 	return true
 }
@@ -202,14 +221,14 @@ func (s *Server) GrantAuthWithUser(ctx *fiber.Ctx, role, userID string) error {
 	if err != nil {
 		return err
 	}
-	auth.SetAuthCookies(ctx, token, role, s.sessions.TTL())
+	auth.SetAuthCookies(ctx, token, role, s.sessions.TTL(), s.config.CookieSecure)
 	return nil
 }
 
 // RevokeAuth 注销当前请求的会话并清除鉴权 cookie（登出）。
 func (s *Server) RevokeAuth(ctx *fiber.Ctx) {
 	s.sessions.Revoke(ctx.Cookies(auth.AuthCookieName))
-	auth.ClearAuthCookies(ctx)
+	auth.ClearAuthCookies(ctx, s.config.CookieSecure)
 }
 
 // CookieAuth 从请求的 ven_auth cookie 中解析用户角色：

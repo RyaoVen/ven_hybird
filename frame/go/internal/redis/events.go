@@ -43,13 +43,21 @@ func (t *EventTransport) Subscribe(handler func(ev event.ChangeEvent)) {
 	pubsub := t.client.Subscribe(context.Background(), changeChannel)
 	go func() {
 		for msg := range pubsub.Channel() {
-			var ev event.ChangeEvent
-			if err := json.Unmarshal([]byte(msg.Payload), &ev); err != nil {
-				log.Printf("redis: change event decode failed: %v", err)
-				continue
-			}
-			ev.EnqueuedAt = time.Now()
-			handler(ev)
+			func() {
+				// 单条消息处理 panic 兜底：订阅协程不退出，后续消息照常接收
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("redis: change event subscriber recovered from panic: %v", r)
+					}
+				}()
+				var ev event.ChangeEvent
+				if err := json.Unmarshal([]byte(msg.Payload), &ev); err != nil {
+					log.Printf("redis: change event decode failed: %v", err)
+					return
+				}
+				ev.EnqueuedAt = time.Now()
+				handler(ev)
+			}()
 		}
 	}()
 }

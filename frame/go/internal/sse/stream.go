@@ -3,6 +3,7 @@ package sse
 
 import (
 	"bufio"
+	"log"
 	"net"
 	"time"
 )
@@ -18,7 +19,14 @@ const (
 // Stream 运行连接的写循环：开场先写一帧注释（让响应头立即下达到客户端），
 // 之后消息帧即时写出，心跳保活，断线/注销/关停退出。
 // raw 用于滚动刷新写 deadline；每次写前重置，慢客户端写阻塞至超时也由它掐断。
+// panic 兜底：写循环运行在 fasthttp 连接协程中，recover 记日志后正常退出（连接关闭），
+// 不依赖 fasthttp 的连接级兜底。
 func (c *Conn) Stream(w *bufio.Writer, raw net.Conn) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("sse: stream %s recovered from panic: %v", c.Path, r)
+		}
+	}()
 	if raw != nil {
 		_ = raw.SetWriteDeadline(time.Now().Add(writeDeadline))
 	}

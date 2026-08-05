@@ -127,7 +127,8 @@ func (m *MemoryBackend) Delete(token string) {
 }
 
 // SetAuthCookies 同时下发令牌 cookie（HttpOnly）与角色 cookie（JS 可读）。
-func SetAuthCookies(ctx *fiber.Ctx, token, role string, ttl time.Duration) {
+// secure 为 true 时两个 cookie 都带 Secure 标志（仅 HTTPS 发送，由 VEN_COOKIE_SECURE 配置）。
+func SetAuthCookies(ctx *fiber.Ctx, token, role string, ttl time.Duration, secure bool) {
 	expires := time.Now().Add(ttl)
 	ctx.Cookie(&fiber.Cookie{
 		Name:     AuthCookieName,
@@ -135,20 +136,25 @@ func SetAuthCookies(ctx *fiber.Ctx, token, role string, ttl time.Duration) {
 		Path:     "/",
 		Expires:  expires,
 		HTTPOnly: true,
+		Secure:   secure,
 		SameSite: fiber.CookieSameSiteLaxMode,
 	})
+	// ven_role 刻意不设 HttpOnly：前端路由守卫需用 JS 读取角色（见 RoleCookieName 注释）。
+	// 它只含角色名、无会话能力——鉴权唯一依据是 HttpOnly 的 ven_auth 令牌，XSS 读到角色名也冒充不了会话。
 	ctx.Cookie(&fiber.Cookie{
 		Name:     RoleCookieName,
 		Value:    role,
 		Path:     "/",
 		Expires:  expires,
 		HTTPOnly: false,
+		Secure:   secure,
 		SameSite: fiber.CookieSameSiteLaxMode,
 	})
 }
 
 // ClearAuthCookies 清除两个鉴权 cookie（登出）。
-func ClearAuthCookies(ctx *fiber.Ctx) {
+// secure 须与下发时一致：Secure cookie 只在 HTTPS 下生效，清除标志对不上会删不掉旧 cookie。
+func ClearAuthCookies(ctx *fiber.Ctx, secure bool) {
 	for _, name := range []string{AuthCookieName, RoleCookieName} {
 		ctx.Cookie(&fiber.Cookie{
 			Name:     name,
@@ -156,6 +162,7 @@ func ClearAuthCookies(ctx *fiber.Ctx) {
 			Path:     "/",
 			Expires:  time.Now().Add(-time.Hour),
 			HTTPOnly: name == AuthCookieName,
+			Secure:   secure,
 			SameSite: fiber.CookieSameSiteLaxMode,
 		})
 	}

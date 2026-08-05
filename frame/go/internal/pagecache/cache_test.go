@@ -77,7 +77,7 @@ func TestMemoryBackend(t *testing.T) {
 }
 
 func TestStoreDoSingleFlight(t *testing.T) {
-	store := NewStore(NewMemoryBackend(10), time.Hour)
+	store := NewStore(NewMemoryBackend(10), time.Hour, time.Hour)
 	var mu sync.Mutex
 	calls := 0
 	fn := func() (*Entry, error) {
@@ -125,7 +125,7 @@ func TestStoreDoSingleFlight(t *testing.T) {
 }
 
 func TestStoreDoErrorNotCached(t *testing.T) {
-	store := NewStore(NewMemoryBackend(10), time.Hour)
+	store := NewStore(NewMemoryBackend(10), time.Hour, time.Hour)
 	boom := errors.New("boom")
 	if _, _, err := store.Do("k", func() (*Entry, error) { return nil, boom }); !errors.Is(err, boom) {
 		t.Fatalf("expected boom, got %v", err)
@@ -145,5 +145,65 @@ func TestStoreDoErrorNotCached(t *testing.T) {
 	// 计数：两次回源（失败那次也算回源）
 	if _, misses, _ := store.Stats(); misses != 2 {
 		t.Fatalf("expected misses=2, got %d", misses)
+	}
+}
+
+// stale-while-revalidate：ttl 过后 Get 不命中但条目仍保留（GetStale 可取回），
+// Do 对过期条目仍会回源刷新；物理保留期（ttl+stale）过后条目被丢弃。
+func TestStoreStaleWindow(t *testing.T) {
+	store := NewStore(NewMemoryBackend(10), 30*time.Millisecond, 100*time.Millisecond)
+	_, _, err := store.Do("k", func() (*Entry, error) {
+		return &Entry{HTML: "v1", RenderedAt: time.Now()}, nil
+	})
+	if err != nil {
+		t.Fatalf("first render failed: %v", err)
+	}
+	// 新鲜期内：Get 命中
+	if got, ok := store.Get("k"); !ok || got.HTML != "v1" {
+		t.Fatal("expected fresh hit")
+	}
+
+	// 过期但保留期内：Get 不命中，GetStale 可取回过期条目
+	time.Sleep(50 * time.Millisecond)
+	if _, ok := store.Get("k"); ok {
+		t.Fatal("stale entry must not count as fresh hit")
+	}
+	stale, ok := store.GetStale("k")
+	if !ok || stale.HTML != "v1" {
+		t.Fatalf("expected stale entry retained, got ok=%v entry=%+v", ok, stale)
+	}
+
+	// Do 对过期条目仍回源刷新（stale 不阻断刷新）
+	refreshed := false
+	entry, shared, err := store.Do("k", func() (*Entry, error) {
+		refreshed = true
+		return &Entry{HTML: "v2", RenderedAt: time.Now()}, nil
+	})
+	if err != nil || !refreshed || shared || entry.HTML != "v2" {
+		t.Fatalf("expected refresh on stale, got entry=%+v shared=%v err=%v", entry, shared, err)
+	}
+
+	// 物理保留期（30+100ms）过后：GetStale 返回 false
+	time.Sleep(140 * time.Millisecond)
+	if _, ok := store.GetStale("k"); ok {
+		t.Fatal("entry should be dropped after physical retention")
+	}
+}
+
+// stale 窗口为 0 时（未配置/关闭）：行为与无 stale 支持一致——过期条目直接不可见。
+func TestStoreStaleWindowZeroDisabled(t *testing.T) {
+	store := NewStore(NewMemoryBackend(10), 20*time.Millisecond, 0)
+	_, _, err := store.Do("k", func() (*Entry, error) {
+		return &Entry{HTML: "v1", RenderedAt: time.Now()}, nil
+	})
+	if err != nil {
+		t.Fatalf("render failed: %v", err)
+	}
+	time.Sleep(40 * time.Millisecond)
+	if _, ok := store.Get("k"); ok {
+		t.Fatal("expected miss after ttl")
+	}
+	if _, ok := store.GetStale("k"); ok {
+		t.Fatal("stale disabled: entry should be gone after ttl")
 	}
 }

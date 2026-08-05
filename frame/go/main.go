@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -30,10 +31,15 @@ func main() {
 	pending := ssr.NewPendingRegistry(cfg.MaxPendingRenders)
 
 	// 步骤 3: 从 Node 端拉取全部页面路由模式（nodePagesPattern）
-	// Node 是页面路由权威，Go 用它校验页面注册；失败重试 3 次退避
-	patterns, err := fetchPatternsWithRetry(cfg, 3)
+	// Node 是页面路由权威，Go 用它校验页面注册；失败重试 3 次退避。
+	// 高可用：拉取失败时回退最近一次持久化的 pattern 启动（Node 恢复后 refetchPatterns 自动换新）；
+	// 首启无持久化副本才失败退出——没有路由表无法服务。
+	patterns, fallback, err := loadPatterns(cfg, 3)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Node 未就绪: %v（首启无持久化页面模式，无法提供服务；Node worker 启动后重试）", err)
+	}
+	if fallback {
+		log.Printf("Node 未就绪，使用持久化页面模式启动（%s），Node 恢复后自动重拉", cfg.PatternsFile)
 	}
 
 	// 步骤 4: 创建 HTTP 服务器并注册内部路由（渲染回调、健康检查、静态资源等）
@@ -81,4 +87,23 @@ func fetchPatternsWithRetry(cfg config.Config, attempts int) (*pagepattern.Valid
 		}
 	}
 	return nil, err
+}
+
+// loadPatterns 拉取 Node 页面模式；失败时回退最近一次成功拉取的持久化副本。
+// 返回 (validator, fallbackUsed, error)：error 表示 Node 不可达且无持久化副本
+// （首启场景，无法服务，由调用方失败退出）。
+func loadPatterns(cfg config.Config, attempts int) (*pagepattern.Validator, bool, error) {
+	patterns, err := fetchPatternsWithRetry(cfg, attempts)
+	if err == nil {
+		// 持久化最近一次成功拉取的 pattern（best-effort，写失败不影响启动）
+		if perr := pagepattern.Save(patterns, cfg.PatternsFile); perr != nil {
+			log.Printf("persist page patterns failed: %v", perr)
+		}
+		return patterns, false, nil
+	}
+	persisted, perr := pagepattern.Load(cfg.PatternsFile)
+	if perr != nil {
+		return nil, false, fmt.Errorf("node not ready and no persisted page patterns (%s): %v", cfg.PatternsFile, err)
+	}
+	return persisted, true, nil
 }

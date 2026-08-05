@@ -34,16 +34,24 @@ type Backend interface {
 // hits/misses/shared 为运行计数，供日志与监控观测。
 type Store struct {
 	backend Backend
-	ttl     time.Duration
+	ttl     time.Duration // 新鲜窗口：ttl 内算缓存命中
+	stale   time.Duration // stale 保留窗口：过期后仍保留（渲染失败时 stale 兜底；0 = 不保留）
 	flight  *flightGroup
 	hits    atomic.Uint64 // 缓存命中次数
 	misses  atomic.Uint64 // 回源次数（无论结果成败）
 	shared  atomic.Uint64 // flight 共享次数
 }
 
-// NewStore 创建页面缓存，backend 为底层 KV 实现，ttl 为条目有效期。
-func NewStore(backend Backend, ttl time.Duration) *Store {
-	return &Store{backend: backend, ttl: ttl, flight: newFlightGroup()}
+// NewStore 创建页面缓存，backend 为底层 KV 实现。
+// ttl 为条目新鲜期；stale 为过期后的物理保留期（stale-while-revalidate 用，
+// 0 = 不保留，行为与无 stale 支持时一致）。
+// 物理保留期 = ttl + stale：新鲜判定在 Store 层（依据 Entry.RenderedAt），
+// 后端只负责存多久——这样内存与 Redis 后端无需感知新鲜语义。
+func NewStore(backend Backend, ttl time.Duration, stale time.Duration) *Store {
+	if stale < 0 {
+		stale = 0
+	}
+	return &Store{backend: backend, ttl: ttl, stale: stale, flight: newFlightGroup()}
 }
 
 // Stats 返回缓存运行计数：命中、回源、共享次数。
@@ -51,13 +59,27 @@ func (s *Store) Stats() (hits, misses, shared uint64) {
 	return s.hits.Load(), s.misses.Load(), s.shared.Load()
 }
 
-// Get 查找缓存条目，未命中或已过期返回 false。
+// fresh 判断条目是否仍在新鲜窗口内。
+// RenderedAt 为零（旧格式/测试构造）视为新鲜，避免无谓的降级。
+func (s *Store) fresh(entry *Entry) bool {
+	return entry.RenderedAt.IsZero() || time.Since(entry.RenderedAt) < s.ttl
+}
+
+// Get 查找缓存条目，仅新鲜条目算命中；过期但仍保留的条目返回 false
+// （调用方渲染失败时可经 GetStale 取回作 stale 兜底）。
 func (s *Store) Get(key string) (*Entry, bool) {
 	entry, ok := s.backend.Get(key)
-	if ok {
-		s.hits.Add(1)
+	if !ok || !s.fresh(entry) {
+		return nil, false
 	}
-	return entry, ok
+	s.hits.Add(1)
+	return entry, true
+}
+
+// GetStale 返回后端中仍保留的条目（可能已过期），供渲染失败时的 stale 兜底。
+// 条目不存在或已过物理保留期（ttl+stale）返回 false。
+func (s *Store) GetStale(key string) (*Entry, bool) {
+	return s.backend.Get(key)
 }
 
 // Invalidate 删除指定 key 的缓存条目。
@@ -70,14 +92,14 @@ func (s *Store) InvalidatePrefix(prefix string) {
 	s.backend.DeletePrefix(prefix)
 }
 
-// Do 执行带回填的回源：先查缓存，命中直接返回；
-// 未命中走防击穿——同 key 并发仅 leader 执行 fn，follower 等待并共享结果。
+// Do 执行带回填的回源：先查缓存，新鲜命中直接返回；
+// 未命中或仅剩 stale 条目走防击穿——同 key 并发仅 leader 执行 fn，follower 等待并共享结果。
 // fn 成功则先把结果回填缓存，再共享给 follower；fn 失败共享错误且不写缓存。
 // 返回 shared=true 表示结果来自缓存或 flight 共享（本次未回源）。
 func (s *Store) Do(key string, fn func() (*Entry, error)) (entry *Entry, shared bool, err error) {
-	if entry, ok := s.backend.Get(key); ok {
+	if item, ok := s.backend.Get(key); ok && s.fresh(item) {
 		s.hits.Add(1)
-		return entry, true, nil
+		return item, true, nil
 	}
 	if entry, err, shared := s.flight.acquire(key); shared {
 		s.shared.Add(1)
@@ -86,8 +108,9 @@ func (s *Store) Do(key string, fn func() (*Entry, error)) (entry *Entry, shared 
 	entry, err = fn()
 	s.misses.Add(1)
 	if err == nil && entry != nil && entry.HTML != "" {
-		// 先回填再唤醒，保证 follower 与后续请求立即可用
-		_ = s.backend.Set(key, entry, s.ttl)
+		// 先回填再唤醒，保证 follower 与后续请求立即可用；
+		// 物理保留期 = ttl + stale，过期后仍可被 GetStale 取回
+		_ = s.backend.Set(key, entry, s.ttl+s.stale)
 	}
 	s.flight.complete(key, entry, err)
 	return entry, false, err

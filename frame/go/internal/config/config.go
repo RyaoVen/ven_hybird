@@ -10,43 +10,63 @@ import (
 
 // Config 是 VenHybird 网关的配置结构体，配置值优先从环境变量读取。
 type Config struct {
-	ListenAddr        string        // HTTP 监听地址，如 ":8080"，环境变量: VEN_LISTEN_ADDR
-	NodeWorkerURL     string        // Node.js SSR 工作节点 URL，环境变量: VEN_NODE_WORKER_URL
-	NodeSubmitTimeout time.Duration // 任务提交超时，环境变量: VEN_NODE_SUBMIT_TIMEOUT
-	RenderTimeout     time.Duration // 渲染总超时，环境变量: VEN_RENDER_TIMEOUT
-	InternalToken     string        // 内部认证令牌，环境变量: VEN_INTERNAL_TOKEN
-	MaxPendingRenders int           // 最大并发 pending 数，环境变量: VEN_MAX_PENDING_RENDERS
-	AssetsDir         string        // 静态资源目录，环境变量: VEN_ASSETS_DIR
-	IsrDir            string        // ISR 物化文件目录，环境变量: VEN_ISR_DIR
-	IsrEnabled        bool          // 是否启用 ISR（dev 置 false），环境变量: VEN_ISR_ENABLED
-	RedisAddr         string        // Redis 地址（空 = 关闭，回退内存实现），环境变量: VEN_REDIS_ADDR
-	RedisPassword     string        // Redis 密码，环境变量: VEN_REDIS_PASSWORD
-	RedisDB           int           // Redis 数据库编号，环境变量: VEN_REDIS_DB
-	SessionTTL        time.Duration // 会话有效期，环境变量: VEN_SESSION_TTL
-	PageCacheTTL      time.Duration // 动态页内存缓存有效期，环境变量: VEN_PAGE_CACHE_TTL
-	EventQuietWindow  time.Duration // 事件总线 debounce 静默窗口，环境变量: VEN_EVENT_QUIET_WINDOW
-	EventMaxWait      time.Duration // 事件总线持续变更最大等待（强制 flush），环境变量: VEN_EVENT_MAX_WAIT
+	ListenAddr           string        // HTTP 监听地址，如 ":8080"，环境变量: VEN_LISTEN_ADDR
+	NodeWorkerURL        string        // Node.js SSR 工作节点 URL，环境变量: VEN_NODE_WORKER_URL
+	NodeSubmitTimeout    time.Duration // 任务提交超时，环境变量: VEN_NODE_SUBMIT_TIMEOUT
+	RenderTimeout        time.Duration // 渲染总超时，环境变量: VEN_RENDER_TIMEOUT
+	InternalToken        string        // 内部认证令牌，环境变量: VEN_INTERNAL_TOKEN
+	MaxPendingRenders    int           // 最大并发 pending 数，环境变量: VEN_MAX_PENDING_RENDERS
+	AssetsDir            string        // 静态资源目录，环境变量: VEN_ASSETS_DIR
+	IsrDir               string        // ISR 物化文件目录，环境变量: VEN_ISR_DIR
+	IsrEnabled           bool          // 是否启用 ISR（dev 置 false），环境变量: VEN_ISR_ENABLED
+	RedisAddr            string        // Redis 地址（空 = 关闭，回退内存实现），环境变量: VEN_REDIS_ADDR
+	RedisPassword        string        // Redis 密码，环境变量: VEN_REDIS_PASSWORD
+	RedisDB              int           // Redis 数据库编号，环境变量: VEN_REDIS_DB
+	SessionTTL           time.Duration // 会话有效期，环境变量: VEN_SESSION_TTL
+	CookieSecure         bool          // 鉴权 cookie 是否带 Secure 标志（仅 HTTPS 发送；本地 http 开发置 false），环境变量: VEN_COOKIE_SECURE
+	PageCacheTTL         time.Duration // 动态页内存缓存有效期，环境变量: VEN_PAGE_CACHE_TTL
+	EventQuietWindow     time.Duration // 事件总线 debounce 静默窗口，环境变量: VEN_EVENT_QUIET_WINDOW
+	EventMaxWait         time.Duration // 事件总线持续变更最大等待（强制 flush），环境变量: VEN_EVENT_MAX_WAIT
+	PatternsFile         string        // Node 页面模式持久化文件（Node 不可达时回退启动），环境变量: VEN_PATTERNS_FILE
+	PageCacheStaleWindow time.Duration // 过期缓存保留窗口（stale-while-revalidate；0 = 关闭），环境变量: VEN_PAGE_CACHE_STALE_WINDOW
+	NodeCircuitThreshold int           // Node 熔断连续失败阈值，环境变量: VEN_NODE_CIRCUIT_THRESHOLD
+	NodeCircuitHalfOpen  time.Duration // Node 熔断半开探测间隔，环境变量: VEN_NODE_CIRCUIT_HALF_OPEN
 }
 
 // Load 从环境变量加载配置并校验合法性。
 func Load() (Config, error) {
 	config := Config{
-		ListenAddr:        getenv("VEN_LISTEN_ADDR", ":8080"),
-		NodeWorkerURL:     getenv("VEN_NODE_WORKER_URL", "http://127.0.0.1:3000"),
-		NodeSubmitTimeout: duration("VEN_NODE_SUBMIT_TIMEOUT", 5*time.Second),
-		RenderTimeout:     duration("VEN_RENDER_TIMEOUT", 20*time.Second),
-		InternalToken:     getenv("VEN_INTERNAL_TOKEN", "development-token"),
-		MaxPendingRenders: integer("VEN_MAX_PENDING_RENDERS", 100),
-		AssetsDir:         getenv("VEN_ASSETS_DIR", "../node/build"),
-		IsrDir:            getenv("VEN_ISR_DIR", "./isr-pages"),
-		IsrEnabled:        boolean("VEN_ISR_ENABLED", true),
-		RedisAddr:         getenv("VEN_REDIS_ADDR", ""),
-		RedisPassword:     getenv("VEN_REDIS_PASSWORD", ""),
-		RedisDB:           integer("VEN_REDIS_DB", 0),
-		SessionTTL:        duration("VEN_SESSION_TTL", 24*time.Hour),
-		PageCacheTTL:      duration("VEN_PAGE_CACHE_TTL", time.Minute),
-		EventQuietWindow:  duration("VEN_EVENT_QUIET_WINDOW", 5*time.Second),
-		EventMaxWait:      duration("VEN_EVENT_MAX_WAIT", 30*time.Second),
+		ListenAddr:           getenv("VEN_LISTEN_ADDR", ":8080"),
+		NodeWorkerURL:        getenv("VEN_NODE_WORKER_URL", "http://127.0.0.1:3000"),
+		NodeSubmitTimeout:    duration("VEN_NODE_SUBMIT_TIMEOUT", 5*time.Second),
+		RenderTimeout:        duration("VEN_RENDER_TIMEOUT", 20*time.Second),
+		InternalToken:        internalToken(),
+		MaxPendingRenders:    integer("VEN_MAX_PENDING_RENDERS", 100),
+		AssetsDir:            getenv("VEN_ASSETS_DIR", "../node/build"),
+		IsrDir:               getenv("VEN_ISR_DIR", "./isr-pages"),
+		IsrEnabled:           boolean("VEN_ISR_ENABLED", true),
+		RedisAddr:            getenv("VEN_REDIS_ADDR", ""),
+		RedisPassword:        getenv("VEN_REDIS_PASSWORD", ""),
+		RedisDB:              integer("VEN_REDIS_DB", 0),
+		SessionTTL:           duration("VEN_SESSION_TTL", 24*time.Hour),
+		CookieSecure:         boolean("VEN_COOKIE_SECURE", true),
+		PageCacheTTL:         duration("VEN_PAGE_CACHE_TTL", time.Minute),
+		EventQuietWindow:     duration("VEN_EVENT_QUIET_WINDOW", 5*time.Second),
+		EventMaxWait:         duration("VEN_EVENT_MAX_WAIT", 30*time.Second),
+		PatternsFile:         getenv("VEN_PATTERNS_FILE", "./node-patterns.json"),
+		PageCacheStaleWindow: duration("VEN_PAGE_CACHE_STALE_WINDOW", 5*time.Minute),
+		NodeCircuitThreshold: integer("VEN_NODE_CIRCUIT_THRESHOLD", 5),
+		NodeCircuitHalfOpen:  duration("VEN_NODE_CIRCUIT_HALF_OPEN", 10*time.Second),
+	}
+
+	// 内部令牌是内部通道（渲染回调/页面模式拉取）的唯一凭据，安全关键：
+	// 空值或开发默认值一律拒绝启动，防止内部通道在无令牌/弱令牌下带病运行。
+	// 本地开发需显式设置 VEN_INTERNAL_TOKEN（强随机串，见 env.local.example 注释）。
+	if config.InternalToken == "" {
+		return Config{}, fmt.Errorf("VEN_INTERNAL_TOKEN must not be empty: set a strong secret explicitly")
+	}
+	if config.InternalToken == "development-token" {
+		return Config{}, fmt.Errorf("VEN_INTERNAL_TOKEN must not be the default \"development-token\": set a strong secret explicitly")
 	}
 
 	// 业务规则校验：渲染总超时必须大于任务提交超时，
@@ -72,8 +92,28 @@ func Load() (Config, error) {
 	if config.EventMaxWait <= config.EventQuietWindow {
 		return Config{}, fmt.Errorf("VEN_EVENT_MAX_WAIT must be greater than VEN_EVENT_QUIET_WINDOW")
 	}
+	// Node 熔断参数：阈值必须为正，半开间隔必须大于零（否则熔断永远无法恢复）
+	if config.NodeCircuitThreshold < 1 {
+		return Config{}, fmt.Errorf("VEN_NODE_CIRCUIT_THRESHOLD must be greater than zero")
+	}
+	if config.NodeCircuitHalfOpen <= 0 {
+		return Config{}, fmt.Errorf("VEN_NODE_CIRCUIT_HALF_OPEN must be greater than zero")
+	}
+	// stale 保留窗口不能为负（0 = 关闭 stale 兜底，合法）
+	if config.PageCacheStaleWindow < 0 {
+		return Config{}, fmt.Errorf("VEN_PAGE_CACHE_STALE_WINDOW must not be negative")
+	}
 
 	return config, nil
+}
+
+// internalToken 读取内部令牌：未设置时回退开发默认值（Load 校验会拒绝），
+// 显式置空则保留空值（同样被 Load 校验拒绝）——空/默认两态都不可绕过启动校验。
+func internalToken() string {
+	if value, ok := os.LookupEnv("VEN_INTERNAL_TOKEN"); ok {
+		return value
+	}
+	return "development-token"
 }
 
 // getenv 获取环境变量值，未设置时返回 fallback。
