@@ -2,6 +2,7 @@
  * @file HTTP 渲染控制器模块
  * @description SSR 渲染服务的 HTTP 接入层，接收渲染请求、控制并发、异步执行并通过回调返回结果
  */
+import * as crypto from "node:crypto";
 import { HttpClient, HttpHandler, HttpServer, HttpServerOptions } from "./httpClient";
 import { RenderExecutionGate } from "./renderExecutionGate";
 import { PagePatternList, RenderCallback, RenderError, RenderTask } from "./types";
@@ -150,10 +151,13 @@ export class HttpController {
         }
     }
 
-    /** 验证内部请求 token */
+    /** 验证内部请求 token（timing-safe：常量时间比较，防时序侧信道逐字符猜解） */
     private isInternalRequest(headers: Record<string, string>): boolean {
-        if (!this.options.internalToken) return true;
-        return headers["x-ven-internal-token"] === this.options.internalToken;
+        if (!this.options.internalToken) return true; // 未配置：本地开发直接放行
+        const given = headers["x-ven-internal-token"] ?? "";
+        const expected = this.options.internalToken;
+        if (given.length !== expected.length) return false; // 长度不等直接拒绝
+        return crypto.timingSafeEqual(Buffer.from(given), Buffer.from(expected));
     }
 }
 
