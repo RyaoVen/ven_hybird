@@ -155,6 +155,25 @@ func (s *Server) Config() config.Config {
 	return s.config
 }
 
+// StartPatternRefresher 启动 Node 页面模式主动刷新 goroutine（随进程生命周期）。
+// 解决双端路由运行期窗口：Node build 后路由表变化，Go 不再只靠「校验失败才重拉」，
+// 按配置间隔定时重拉并换入新校验器；刷新失败保留旧 patterns（高可用），下次重试。
+// 间隔 <= 0 时关闭主动刷新（仅保留请求触发的被动刷新）。
+func (s *Server) StartPatternRefresher() {
+	if s.config.PatternRefresh <= 0 {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(s.config.PatternRefresh)
+		defer ticker.Stop()
+		for range ticker.C {
+			if !s.refetchPatterns() {
+				// 失败由 refetchPatterns 记日志，保留旧 patterns
+			}
+		}
+	}()
+}
+
 // pageCacheCapacity 是页面缓存最大条目数（均值 ~30KB/页 → ~30MB）。
 const pageCacheCapacity = 1000
 

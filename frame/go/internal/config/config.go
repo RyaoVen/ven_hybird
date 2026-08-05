@@ -28,6 +28,7 @@ type Config struct {
 	EventQuietWindow     time.Duration // 事件总线 debounce 静默窗口，环境变量: VEN_EVENT_QUIET_WINDOW
 	EventMaxWait         time.Duration // 事件总线持续变更最大等待（强制 flush），环境变量: VEN_EVENT_MAX_WAIT
 	PatternsFile         string        // Node 页面模式持久化文件（Node 不可达时回退启动），环境变量: VEN_PATTERNS_FILE
+	PatternRefresh       time.Duration // Node 页面模式主动刷新间隔（0 = 关闭；Node 路由表变化后自动感知），环境变量: VEN_PATTERN_REFRESH
 	PageCacheStaleWindow time.Duration // 过期缓存保留窗口（stale-while-revalidate；0 = 关闭），环境变量: VEN_PAGE_CACHE_STALE_WINDOW
 	NodeCircuitThreshold int           // Node 熔断连续失败阈值，环境变量: VEN_NODE_CIRCUIT_THRESHOLD
 	NodeCircuitHalfOpen  time.Duration // Node 熔断半开探测间隔，环境变量: VEN_NODE_CIRCUIT_HALF_OPEN
@@ -54,6 +55,7 @@ func Load() (Config, error) {
 		EventQuietWindow:     duration("VEN_EVENT_QUIET_WINDOW", 5*time.Second),
 		EventMaxWait:         duration("VEN_EVENT_MAX_WAIT", 30*time.Second),
 		PatternsFile:         getenv("VEN_PATTERNS_FILE", "./node-patterns.json"),
+		PatternRefresh:       duration("VEN_PATTERN_REFRESH", 30*time.Second),
 		PageCacheStaleWindow: duration("VEN_PAGE_CACHE_STALE_WINDOW", 5*time.Minute),
 		NodeCircuitThreshold: integer("VEN_NODE_CIRCUIT_THRESHOLD", 5),
 		NodeCircuitHalfOpen:  duration("VEN_NODE_CIRCUIT_HALF_OPEN", 10*time.Second),
