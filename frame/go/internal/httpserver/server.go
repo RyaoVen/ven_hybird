@@ -43,6 +43,11 @@ type Server struct {
 	staticDecls        map[string]*isr.Declaration // StaticPage 声明（按模板字符串）
 	fallbackRegistered bool                        // 页面兜底路由是否已注册（RegisterPageFallback 幂等标记）
 
+	staticAuth map[string][]int64 // StaticPage 鉴权等级（pattern → levels；空 = 公开，ISR 直发也校验）
+	authMu     sync.RWMutex       // 保护 staticAuth（启动期注册，运行期只读）
+
+	loginRedirect string // 401 时登录跳转目标（hybrid 可经 SetLoginRedirect 覆盖，默认 /login）
+
 	visitMu  sync.RWMutex      // 保护 visitRec（埋点回调启动期注入，运行期只读）
 	visitRec func(path string) // 访问统计埋点回调（业务层注入；nil = 关闭埋点）
 }
@@ -126,6 +131,8 @@ func New(
 		breaker:        circuitbreaker.New(cfg.NodeCircuitThreshold, cfg.NodeCircuitHalfOpen),
 		eventTransport: eventTransport,
 		staticDecls:    make(map[string]*isr.Declaration),
+		staticAuth:     make(map[string][]int64),
+		loginRedirect:  "/login",
 	}
 	// 访问统计埋点：最外层 Use，先于 ISR 物化直发与业务路由（ISR 直发也计数）。
 	// 回调此时尚未注入（启动期由 hybrid.App.SetVisitRecorder 注入），请求期判 nil 即可。

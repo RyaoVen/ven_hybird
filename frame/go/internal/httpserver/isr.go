@@ -4,9 +4,12 @@ package httpserver
 import (
 	"fmt"
 	"log"
+	"net/url"
 
 	"ven_hybird/internal/isr"
 	"ven_hybird/internal/pagecache"
+
+	"github.com/gofiber/fiber/v2"
 )
 
 // RegisterStaticPage 注册一个静态页声明：pattern 合法性校验 + 模板查重。
@@ -122,4 +125,62 @@ func (s *Server) materializeQuiet(path string, html string) {
 // renderRoute 回源渲染（render 的无 ctx 版本）：提交 SSR 任务并等待回调。
 func (s *Server) renderRoute(route string, query map[string]string, data any) (*pagecache.Entry, error) {
 	return s.renderWithQuery(route, query, data)
+}
+
+// RegisterStaticPageAuth 登记 StaticPage 的鉴权等级（pattern → levels；空 = 公开）。
+// 由 hybrid.StaticPage 注册时调用；staticAuthMiddleware 据此校验，ISR 物化直发路径同样受保护。
+func (s *Server) RegisterStaticPageAuth(pattern string, levels []int64) {
+	s.authMu.Lock()
+	s.staticAuth[pattern] = levels
+	s.authMu.Unlock()
+}
+
+// SetLoginRedirect 配置 401（未登录）时的登录跳转目标，默认 /login。
+// hybrid.App.SetLoginRedirect 转发到此，供 StaticPage 鉴权中间件使用。
+func (s *Server) SetLoginRedirect(path string) {
+	s.loginRedirect = path
+}
+
+// staticAuthFor 返回与路径匹配的 StaticPage 鉴权等级（未登记或公开返回 ok=false）。
+func (s *Server) staticAuthFor(path string) (levels []int64, ok bool) {
+	s.authMu.RLock()
+	defer s.authMu.RUnlock()
+	for pattern, levels := range s.staticAuth {
+		if decl, has := s.staticDecls[pattern]; has {
+			if _, matched := decl.Match(path); matched {
+				return levels, true
+			}
+		}
+	}
+	return nil, false
+}
+
+// staticAuthMiddleware 是 StaticPage 鉴权中间件：挂在 ISR 直发中间件之前。
+// 命中带鉴权要求的 StaticPage 模式时校验 cookie 会话——未登录/无权拒绝，
+// 使 ISR 物化直发路径同样受鉴权保护（绕过此中间件即可直读物化文件）。
+// 响应形态与 hybrid.Page 一致：data-only 返回 JSON 401/403，HTML 导航 302 跳登录、
+// 403 原地渲染错误页。
+func (s *Server) staticAuthMiddleware() fiber.Handler {
+	return func(ctx *fiber.Ctx) error {
+		levels, ok := s.staticAuthFor(ctx.Path())
+		if !ok || len(levels) == 0 {
+			return ctx.Next() // 公开 StaticPage 或未登记：放行
+		}
+		userRole, authed := s.CookieAuth(ctx)
+		if !authed {
+			if ctx.Get(dataOnlyHeader) == "true" {
+				return ctx.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthenticated"})
+			}
+			return ctx.Redirect(s.loginRedirect+"?next="+url.QueryEscape(ctx.OriginalURL()), fiber.StatusFound)
+		}
+		allowed, err := s.CheckAuth(userRole, levels)
+		if err != nil || !allowed {
+			if ctx.Get(dataOnlyHeader) == "true" {
+				return ctx.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "forbidden"})
+			}
+			ctx.Status(fiber.StatusForbidden)
+			return s.RenderPageAs(ctx, "/403", nil)
+		}
+		return ctx.Next()
+	}
 }

@@ -14,9 +14,9 @@ import (
 )
 
 // mustStaticPage 注册静态页并在失败时终止测试。
-func mustStaticPage(t *testing.T, app *App, pattern string, maxPages int, smartLoad bool, h PageHandler) {
+func mustStaticPage(t *testing.T, app *App, pattern string, maxPages int, smartLoad bool, roles []string, h PageHandler) {
 	t.Helper()
-	if err := app.StaticPage(pattern, maxPages, smartLoad, h); err != nil {
+	if err := app.StaticPage(pattern, maxPages, smartLoad, roles, h); err != nil {
 		t.Fatalf("register static page %q failed: %v", pattern, err)
 	}
 }
@@ -88,7 +88,7 @@ func getPage(t *testing.T, app *App, path string) (int, string) {
 
 func TestStaticPage_ServeFromFile(t *testing.T) {
 	app, client, pending, _ := setupTestApp(t)
-	mustStaticPage(t, app, "/news/:id", 10, false, func(c *PageCtx) error {
+	mustStaticPage(t, app, "/news/:id", 10, false, nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"id": c.Param("id")})
 	})
 	count, stop := countingResolver(client, pending, "<html>news</html>")
@@ -110,7 +110,7 @@ func TestStaticPage_ServeFromFile(t *testing.T) {
 func TestStaticPage_DataChangeLocal(t *testing.T) {
 	app, client, pending, server := setupTestApp(t)
 	shortDebounce(app)
-	mustStaticPage(t, app, "/news/:id", 10, false, func(c *PageCtx) error {
+	mustStaticPage(t, app, "/news/:id", 10, false, nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"id": c.Param("id")})
 	})
 	count, stop := countingResolver(client, pending, "<html>news</html>")
@@ -136,7 +136,7 @@ func TestStaticPage_DataChangeLocal(t *testing.T) {
 
 func TestStaticPage_LRU(t *testing.T) {
 	app, client, pending, server := setupTestApp(t)
-	mustStaticPage(t, app, "/news/:id", 2, false, func(c *PageCtx) error {
+	mustStaticPage(t, app, "/news/:id", 2, false, nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"id": c.Param("id")})
 	})
 	count, stop := countingResolver(client, pending, "<html>news</html>")
@@ -160,7 +160,7 @@ func TestStaticPage_LRU(t *testing.T) {
 func TestStaticPage_SmartPrerender(t *testing.T) {
 	app, client, pending, _ := setupTestApp(t)
 	shortDebounce(app)
-	mustStaticPage(t, app, "/news/:id", 1, true, func(c *PageCtx) error {
+	mustStaticPage(t, app, "/news/:id", 1, true, nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"id": c.Param("id")})
 	})
 	count, stop := countingResolver(client, pending, "<html>news</html>")
@@ -195,7 +195,7 @@ func TestStaticPage_DataChangeUndeclared(t *testing.T) {
 
 func TestStaticPage_DataChangeAsync(t *testing.T) {
 	app, client, pending, server := setupTestApp(t)
-	mustStaticPage(t, app, "/news/:id", 10, false, func(c *PageCtx) error {
+	mustStaticPage(t, app, "/news/:id", 10, false, nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"id": c.Param("id")})
 	})
 	count, stop := countingResolver(client, pending, "<html>news</html>")
