@@ -144,7 +144,7 @@ SSR 直出后由内置 SPA router 接管：registry 驱动路由匹配、链接�
 | `VEN_NODE_SUBMIT_TIMEOUT` | `5s` | 任务提交超时 |
 | `VEN_RENDER_TIMEOUT` | `20s` | 渲染总超时（须大于提交超时） |
 | `VEN_INTERNAL_TOKEN` | **必填** | 内部认证令牌（渲染回调/页面模式拉取凭据；**空值或默认值 `development-token` 拒绝启动**，须配置强随机串） |
-| `VEN_MAX_PENDING_RENDERS` | `100` | 最大并发 pending 渲染数 |
+| `VEN_MAX_PENDING_RENDERS` | `4` | 最大并发 pending 渲染数（背压阈值，默认对齐 Node `maxConcurrentRenders`；满时新页面请求 503） |
 | `VEN_ASSETS_DIR` | `../node/build` | 静态资源目录 |
 | `VEN_ISR_DIR` | `./isr-pages` | ISR 物化目录 |
 | `VEN_ISR_ENABLED` | `true` | ISR 开关（dev 可 false） |

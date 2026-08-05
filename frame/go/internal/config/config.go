@@ -15,7 +15,7 @@ type Config struct {
 	NodeSubmitTimeout    time.Duration // 任务提交超时，环境变量: VEN_NODE_SUBMIT_TIMEOUT
 	RenderTimeout        time.Duration // 渲染总超时，环境变量: VEN_RENDER_TIMEOUT
 	InternalToken        string        // 内部认证令牌，环境变量: VEN_INTERNAL_TOKEN
-	MaxPendingRenders    int           // 最大并发 pending 数，环境变量: VEN_MAX_PENDING_RENDERS
+	MaxPendingRenders    int           // 最大并发 pending 数（背压阈值，默认对齐 Node maxConcurrentRenders），环境变量: VEN_MAX_PENDING_RENDERS
 	AssetsDir            string        // 静态资源目录，环境变量: VEN_ASSETS_DIR
 	IsrDir               string        // ISR 物化文件目录，环境变量: VEN_ISR_DIR
 	IsrEnabled           bool          // 是否启用 ISR（dev 置 false），环境变量: VEN_ISR_ENABLED
@@ -41,7 +41,7 @@ func Load() (Config, error) {
 		NodeSubmitTimeout:    duration("VEN_NODE_SUBMIT_TIMEOUT", 5*time.Second),
 		RenderTimeout:        duration("VEN_RENDER_TIMEOUT", 20*time.Second),
 		InternalToken:        internalToken(),
-		MaxPendingRenders:    integer("VEN_MAX_PENDING_RENDERS", 100),
+		MaxPendingRenders:    integer("VEN_MAX_PENDING_RENDERS", 4),
 		AssetsDir:            getenv("VEN_ASSETS_DIR", "../node/build"),
 		IsrDir:               getenv("VEN_ISR_DIR", "./isr-pages"),
 		IsrEnabled:           boolean("VEN_ISR_ENABLED", true),
