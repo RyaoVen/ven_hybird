@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/url"
 	"sync/atomic"
 	"time"
@@ -95,25 +96,44 @@ func (s *Store) InvalidatePrefix(prefix string) {
 // Do 执行带回填的回源：先查缓存，新鲜命中直接返回；
 // 未命中或仅剩 stale 条目走防击穿——同 key 并发仅 leader 执行 fn，follower 等待并共享结果。
 // fn 成功则先把结果回填缓存，再共享给 follower；fn 失败共享错误且不写缓存。
+// leader 路径无论成功/失败/panic，complete 必然执行（defer 兜底），follower 不会永久挂起；
+// follower 等待超时（flightTimeout）时降级为自身回源，结果以本次为准。
 // 返回 shared=true 表示结果来自缓存或 flight 共享（本次未回源）。
 func (s *Store) Do(key string, fn func() (*Entry, error)) (entry *Entry, shared bool, err error) {
 	if item, ok := s.backend.Get(key); ok && s.fresh(item) {
 		s.hits.Add(1)
 		return item, true, nil
 	}
-	if entry, err, shared := s.flight.acquire(key); shared {
-		s.shared.Add(1)
-		return entry, true, err
+	if item, err, shared := s.flight.acquire(key); shared {
+		if err == nil {
+			s.shared.Add(1)
+			return item, true, nil
+		}
+		// follower 等待超时（leader 异常未 complete）：降级为自身回源，不向调用方暴露内部超时
 	}
-	entry, err = fn()
+
+	// leader：执行回源。defer 保证 complete 必然执行——即使 fn panic，
+	// follower 也会被唤醒而非永久阻塞（panic 的错误结果由 panic 向上传播，follower 收到 nil 结果）。
+	var fnErr error
+	defer func() {
+		if r := recover(); r != nil {
+			// 记录 panic 并以错误完成 flight：follower 拿到错误而非 nil 结果
+			fnErr = errors.New("pagecache: leader fn panic")
+			s.flight.complete(key, nil, fnErr)
+			panic(r) // 继续向上传播，由调用方 recover 兜底
+		} else {
+			s.flight.complete(key, entry, fnErr)
+		}
+	}()
+
+	entry, fnErr = fn()
 	s.misses.Add(1)
-	if err == nil && entry != nil && entry.HTML != "" {
+	if fnErr == nil && entry != nil && entry.HTML != "" {
 		// 先回填再唤醒，保证 follower 与后续请求立即可用；
 		// 物理保留期 = ttl + stale，过期后仍可被 GetStale 取回
 		_ = s.backend.Set(key, entry, s.ttl+s.stale)
 	}
-	s.flight.complete(key, entry, err)
-	return entry, false, err
+	return entry, false, fnErr
 }
 
 // Key 构造缓存键：path + 规范化 query + data 指纹。
