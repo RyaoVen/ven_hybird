@@ -123,8 +123,9 @@ func (s *Server) materializeQuiet(path string, html string) {
 }
 
 // renderRoute 回源渲染（render 的无 ctx 版本）：提交 SSR 任务并等待回调。
+// 无客户端可断开：clientDone 传 nil（nil channel 永不触发，只等回调/超时）。
 func (s *Server) renderRoute(route string, query map[string]string, data any) (*pagecache.Entry, error) {
-	return s.renderWithQuery(route, query, data)
+	return s.renderWithQuery(route, query, data, nil)
 }
 
 // RegisterStaticPageAuth 登记 StaticPage 的鉴权等级（pattern → levels；空 = 公开）。

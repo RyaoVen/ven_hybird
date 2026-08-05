@@ -115,8 +115,9 @@ func (e *renderError) Error() string { return e.message }
 // render 回源渲染：提交 SSR 任务给 Node.js 并等待回调结果，
 // 成功返回可缓存的 Entry，失败返回 renderError（不缓存）。
 // route 为页面匹配路由（兜底/常规渲染为请求路径，错误页渲染为错误页路由）。
+// 监听客户端断开：请求方放弃后立即停止等待（见 renderWithQuery）。
 func (s *Server) render(ctx *fiber.Ctx, route string, data any) (*pagecache.Entry, error) {
-	return s.renderWithQuery(route, ctx.Queries(), data)
+	return s.renderWithQuery(route, ctx.Queries(), data, ctx.Context().Done())
 }
 
 // refreshStaleAsync 在后台回源刷新过期缓存（stale-while-revalidate 的 revalidate 阶段）。
@@ -129,7 +130,8 @@ func (s *Server) refreshStaleAsync(key, route string, query map[string]string, d
 	}
 	go func() {
 		entry, _, err := s.pageCache.Do(key, func() (*pagecache.Entry, error) {
-			return s.renderWithQuery(route, queryCopy, data)
+			// 后台刷新无客户端可断开：clientDone 传 nil（nil channel 永不触发，等回调/超时）
+			return s.renderWithQuery(route, queryCopy, data, nil)
 		})
 		if err != nil {
 			log.Printf("render: stale refresh %s failed: %v", route, err)
@@ -140,7 +142,11 @@ func (s *Server) refreshStaleAsync(key, route string, query map[string]string, d
 }
 
 // renderWithQuery 是 render 的核心（显式 query 版本，供后台预渲染复用）。
-func (s *Server) renderWithQuery(route string, query map[string]string, data any) (*pagecache.Entry, error) {
+// clientDone 是客户端断开通知（fiber ctx.Context().Done()；后台预渲染传 nil，
+// nil channel 的接收分支永不触发 = 只等回调/超时）：
+// 断开后立即停止等待（不等满渲染超时），pending 由 defer remove 清理，
+// Node 侧同步 SSR 不可中断，但 Go 侧不再挂起即可止损。
+func (s *Server) renderWithQuery(route string, query map[string]string, data any, clientDone <-chan struct{}) (*pagecache.Entry, error) {
 	// 步骤 0: Node 熔断——连续失败达阈值后快速失败（503），不再等待渲染超时；
 	// 半开间隔后放行一个试探请求，成功即恢复
 	if !s.breaker.Allow() {
@@ -218,6 +224,10 @@ func (s *Server) renderWithQuery(route string, query map[string]string, data any
 		// 渲染超时：计入熔断失败
 		s.breaker.RecordFailure()
 		return nil, &renderError{fiber.StatusGatewayTimeout, "render worker timed out", true}
+	case <-clientDone:
+		// 客户端断开（刷新/关闭页面）：立即停止等待，不再等渲染超时。
+		// Node 已完成的任务结果随后到达时 pending 已清理 → 回调返回 unknown hook（结果丢弃）。
+		return nil, &renderError{fiber.StatusRequestTimeout, "client disconnected while waiting for render", true}
 	}
 }
 
