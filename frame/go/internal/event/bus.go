@@ -205,6 +205,7 @@ func paramsPrefix(a, b []string) bool {
 }
 
 // run 是消费循环：收信号 → 按静默窗口/最大等待 arm 定时器 → 到期 flush。
+// 单次迭代 panic 兜底：记日志后回到"未 arm"状态继续循环，防止协程退出或崩进程。
 func (b *Bus) run() {
 	timer := time.NewTimer(time.Hour)
 	if !timer.Stop() {
@@ -212,37 +213,50 @@ func (b *Bus) run() {
 	}
 	var timerC <-chan time.Time
 	for {
-		select {
-		case <-b.stop:
-			return
-		case <-b.signal:
-		case <-timerC:
-			b.flush()
-			timerC = nil
-		}
+		var stopped bool
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("event: consume loop recovered from panic: %v", r)
+					timerC = nil // 定时器状态不可信：回到未 arm，等下次信号重新计时
+				}
+			}()
+			select {
+			case <-b.stop:
+				stopped = true
+				return
+			case <-b.signal:
+			case <-timerC:
+				b.flush()
+				timerC = nil
+			}
 
-		b.mu.Lock()
-		if len(b.pending) == 0 {
-			timerC = nil
+			b.mu.Lock()
+			if len(b.pending) == 0 {
+				timerC = nil
+				b.mu.Unlock()
+				return
+			}
+			quietRemain := b.QuietWindow - time.Since(b.lastAt)
+			maxRemain := b.MaxWait - time.Since(b.firstAt)
+			wait := quietRemain
+			if maxRemain < wait {
+				wait = maxRemain
+			}
+			if wait <= 0 {
+				// 已达静默窗口或最大等待：立即 flush
+				b.mu.Unlock()
+				b.flush()
+				timerC = nil
+				return
+			}
+			timer.Reset(wait)
+			timerC = timer.C
 			b.mu.Unlock()
-			continue
+		}()
+		if stopped {
+			return
 		}
-		quietRemain := b.QuietWindow - time.Since(b.lastAt)
-		maxRemain := b.MaxWait - time.Since(b.firstAt)
-		wait := quietRemain
-		if maxRemain < wait {
-			wait = maxRemain
-		}
-		if wait <= 0 {
-			// 已达静默窗口或最大等待：立即 flush
-			b.mu.Unlock()
-			b.flush()
-			timerC = nil
-			continue
-		}
-		timer.Reset(wait)
-		timerC = timer.C
-		b.mu.Unlock()
 	}
 }
 
@@ -271,7 +285,9 @@ func (b *Bus) flush() {
 
 	// ① 删除阶段：phaseMu 保证与 ② 的落盘互斥（老代渲染不得跨过删除写入）。
 	// ② 热门路径按页面去重后采集为再生任务，并记录其 ① 完成时的代际。
+	// defer 解锁：invalidate 是用户回调，panic 时也要释放锁（否则再生 worker 卡死）。
 	b.phaseMu.Lock()
+	defer b.phaseMu.Unlock()
 	var tasks []regenTask
 	var succeeded []ChangeEvent // ① 成功的事件（联动回调用）
 	seen := make(map[string]bool)
@@ -296,7 +312,6 @@ func (b *Bus) flush() {
 			tasks = append(tasks, regenTask{template: ev.Pattern, path: path, epoch: b.epoch[path]})
 		}
 	}
-	b.phaseMu.Unlock()
 
 	waited := time.Since(events[0].EnqueuedAt)
 	for _, ev := range events[1:] {
@@ -324,15 +339,28 @@ func (b *Bus) flush() {
 }
 
 // regenLoop 是 ② 再生 worker：逐批逐页回源渲染并落盘（单 goroutine，批次天然串行）。
+// 单页 panic 兜底：记日志后继续处理后续批次，worker 永不退出。
 func (b *Bus) regenLoop() {
 	for {
-		select {
-		case <-b.stop:
-			return
-		case tasks := <-b.regenCh:
-			for _, task := range tasks {
-				b.regenOne(task)
+		var stopped bool
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("event: regen worker recovered from panic: %v", r)
+				}
+			}()
+			select {
+			case <-b.stop:
+				stopped = true
+				return
+			case tasks := <-b.regenCh:
+				for _, task := range tasks {
+					b.regenOne(task)
+				}
 			}
+		}()
+		if stopped {
+			return
 		}
 	}
 }

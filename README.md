@@ -143,11 +143,16 @@ SSR 直出后由内置 SPA router 接管：registry 驱动路由匹配、链接�
 | `VEN_NODE_WORKER_URL` | `http://127.0.0.1:3000` | Node Worker 地址 |
 | `VEN_NODE_SUBMIT_TIMEOUT` | `5s` | 任务提交超时 |
 | `VEN_RENDER_TIMEOUT` | `20s` | 渲染总超时（须大于提交超时） |
-| `VEN_INTERNAL_TOKEN` | `development-token` | 内部认证令牌（生产必须改） |
+| `VEN_INTERNAL_TOKEN` | **必填** | 内部认证令牌（渲染回调/页面模式拉取凭据；**空值或默认值 `development-token` 拒绝启动**，须配置强随机串） |
 | `VEN_MAX_PENDING_RENDERS` | `100` | 最大并发 pending 渲染数 |
 | `VEN_ASSETS_DIR` | `../node/build` | 静态资源目录 |
 | `VEN_ISR_DIR` | `./isr-pages` | ISR 物化目录 |
 | `VEN_ISR_ENABLED` | `true` | ISR 开关（dev 可 false） |
+| `VEN_COOKIE_SECURE` | `true` | 鉴权 cookie Secure 标志（本地 http 开发置 false） |
+| `VEN_PATTERNS_FILE` | `./node-patterns.json` | Node 页面模式持久化副本（Node 不可达时回退启动） |
+| `VEN_PAGE_CACHE_STALE_WINDOW` | `5m` | 过期缓存保留窗口（渲染失败发 stale + 异步回源；0 = 关闭） |
+| `VEN_NODE_CIRCUIT_THRESHOLD` | `5` | Node 熔断连续失败阈值（熔断后快速失败 503） |
+| `VEN_NODE_CIRCUIT_HALF_OPEN` | `10s` | 熔断半开探测间隔（放行一个试探请求恢复） |
 | `VEN_REDIS_ADDR` | 空 | Redis 地址（空 = 内存单实例模式） |
 | `VEN_REDIS_PASSWORD` / `VEN_REDIS_DB` | 空 / `0` | Redis 密码 / 库编号 |
 | `VEN_SESSION_TTL` | `24h` | 会话有效期 |
@@ -161,7 +166,7 @@ SSR 直出后由内置 SPA router 接管：registry 驱动路由匹配、链接�
 |---|---|---|
 | `VEN_NODE_PORT` | `3000` | Node Worker 监听端口 |
 | `VEN_RENDER_CALLBACK_URL` | `http://127.0.0.1:8080/_internal/render-callback` | 渲染回调地址（须指回配对的 Go） |
-| `VEN_INTERNAL_TOKEN` | `development-token` | 与 Go 侧一致 |
+| `VEN_INTERNAL_TOKEN` | **必填** | 与 Go 侧一致（空值/默认值拒绝启动） |
 
 ## 目录结构
 

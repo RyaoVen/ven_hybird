@@ -247,6 +247,87 @@ func TestBus_StaleRenderDropped(t *testing.T) {
 	}
 }
 
+// TestBus_FlushPanicRecovered ① 删除阶段 panic 被兜底：总线不崩不死锁，
+// 后续批次照常失效与再生（也验证 panic 时 phaseMu 已释放，再生 worker 不被卡死）。
+func TestBus_FlushPanicRecovered(t *testing.T) {
+	calls := &callLog{}
+	b := New(
+		func(pattern string, params []string) ([]string, []string, error) {
+			calls.addInvalidate(pattern, params)
+			if calls.invalidateCount() == 1 {
+				panic("invalidate boom")
+			}
+			return []string{"/news/1"}, []string{"/news/1"}, nil
+		},
+		func(template, path string) (string, bool) {
+			calls.addRender(path)
+			return "<html></html>", true
+		},
+		func(path, html string) error {
+			calls.addMaterialize(path)
+			return nil
+		},
+	)
+	defer b.Stop()
+	b.QuietWindow = 30 * time.Millisecond
+	b.MaxWait = 10 * time.Second
+
+	b.Enqueue(ev("/news/:id")) // 第 1 批：invalidate panic，被消费循环兜底
+	waitFor(t, "first flush panic recorded", func() bool { return calls.invalidateCount() == 1 }, 2*time.Second)
+
+	b.Enqueue(ev("/news/:id")) // 第 2 批：消费循环仍存活，正常 flush + 再生
+	waitFor(t, "second flush after recovered panic", func() bool { return calls.invalidateCount() == 2 }, 2*time.Second)
+	waitFor(t, "regen after recovered panic", func() bool { return calls.materializeCount() == 1 }, 2*time.Second)
+}
+
+// TestBus_RegenPanicRecovered ② 再生阶段 panic 被兜底：worker 不退出，
+// 后续批次的再生照常落盘。
+func TestBus_RegenPanicRecovered(t *testing.T) {
+	var mu sync.Mutex
+	var renderCount int
+	var materialized []string
+	b := New(
+		func(pattern string, params []string) ([]string, []string, error) {
+			return []string{"/news/1"}, []string{"/news/1"}, nil
+		},
+		func(template, path string) (string, bool) {
+			mu.Lock()
+			renderCount++
+			first := renderCount == 1
+			mu.Unlock()
+			if first {
+				panic("render boom")
+			}
+			return "<html></html>", true
+		},
+		func(path, html string) error {
+			mu.Lock()
+			materialized = append(materialized, path)
+			mu.Unlock()
+			return nil
+		},
+	)
+	defer b.Stop()
+	b.QuietWindow = 30 * time.Millisecond
+	b.MaxWait = 10 * time.Second
+
+	b.Enqueue(ev("/news/:id")) // 第 1 批：render panic，被 worker 兜底
+	waitFor(t, "first render attempted", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return renderCount >= 1
+	}, 2*time.Second)
+
+	// 等 worker 吞掉 panic 回到就绪
+	time.Sleep(50 * time.Millisecond)
+	b.Enqueue(ev("/news/:id")) // 第 2 批：正常再生
+	waitFor(t, "regen after recovered render panic", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(materialized) >= 1
+	}, 2*time.Second)
+}
+
 // fakeTransport 记录广播事件，订阅 handler 由测试手动触发（模拟回声）。
 type fakeTransport struct {
 	mu        sync.Mutex

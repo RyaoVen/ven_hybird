@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -29,6 +30,7 @@ func TestValidatePagePatternRefetch(t *testing.T) {
 		NodeWorkerURL:     worker.URL,
 		NodeSubmitTimeout: time.Second,
 		RenderTimeout:     2 * time.Second,
+		PatternsFile:      filepath.Join(t.TempDir(), "patterns.json"),
 	}
 	// 初始校验器为空（模拟 Node 新增页面后 Go 列表过期）
 	s := New(cfg, stubClient{}, ssr.NewPendingRegistry(4), stubHookIDs{}, pagepattern.NewValidator(nil))
@@ -39,6 +41,14 @@ func TestValidatePagePatternRefetch(t *testing.T) {
 	}
 	if fetches != 1 {
 		t.Fatalf("expected 1 fetch, got %d", fetches)
+	}
+	// 重拉成功后持久化最近一次成功拉取的 pattern（下次启动 Node 不可达时回退）
+	persisted, err := pagepattern.Load(cfg.PatternsFile)
+	if err != nil {
+		t.Fatalf("refetched patterns not persisted: %v", err)
+	}
+	if err := persisted.Validate("/new-page"); err != nil {
+		t.Fatalf("persisted patterns missing refetched page: %v", err)
 	}
 
 	// 节流：10s 内再次校验未知名 pattern，不应重拉

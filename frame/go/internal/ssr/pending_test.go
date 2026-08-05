@@ -9,17 +9,24 @@ import (
 
 func TestPendingRegister_EmptyHookID(t *testing.T) {
 	r := NewPendingRegistry(4)
-	if _, _, err := r.Register(""); err == nil {
+	if _, _, err := r.Register("", "/x"); err == nil {
 		t.Fatal("expected error for empty hook id")
+	}
+}
+
+func TestPendingRegister_EmptyRoute(t *testing.T) {
+	r := NewPendingRegistry(4)
+	if _, _, err := r.Register("hook-1", ""); err == nil {
+		t.Fatal("expected error for empty route")
 	}
 }
 
 func TestPendingRegister_Duplicate(t *testing.T) {
 	r := NewPendingRegistry(4)
-	if _, _, err := r.Register("hook-1"); err != nil {
+	if _, _, err := r.Register("hook-1", "/x"); err != nil {
 		t.Fatalf("first register failed: %v", err)
 	}
-	if _, _, err := r.Register("hook-1"); err == nil {
+	if _, _, err := r.Register("hook-1", "/x"); err == nil {
 		t.Fatal("expected error for duplicate hook id")
 	}
 }
@@ -28,18 +35,18 @@ func TestPendingRegister_Capacity(t *testing.T) {
 	r := NewPendingRegistry(2)
 	cleanups := make([]func(), 0, 2)
 	for i := 0; i < 2; i++ {
-		_, cleanup, err := r.Register(fmt.Sprintf("hook-%d", i))
+		_, cleanup, err := r.Register(fmt.Sprintf("hook-%d", i), "/x")
 		if err != nil {
 			t.Fatalf("register %d failed: %v", i, err)
 		}
 		cleanups = append(cleanups, cleanup)
 	}
-	if _, _, err := r.Register("hook-2"); err == nil {
+	if _, _, err := r.Register("hook-2", "/x"); err == nil {
 		t.Fatal("expected capacity error")
 	}
 	// 清理一个后容量释放，可再注册
 	cleanups[0]()
-	if _, _, err := r.Register("hook-2"); err != nil {
+	if _, _, err := r.Register("hook-2", "/x"); err != nil {
 		t.Fatalf("register after cleanup failed: %v", err)
 	}
 }
@@ -51,9 +58,30 @@ func TestPendingResolve_NotFound(t *testing.T) {
 	}
 }
 
+func TestPendingResolve_RouteMismatch(t *testing.T) {
+	r := NewPendingRegistry(4)
+	if _, cleanup, err := r.Register("hook-1", "/news/1"); err != nil {
+		t.Fatalf("register failed: %v", err)
+	} else {
+		defer cleanup()
+	}
+
+	// route 不匹配：拒绝投递（条目即删，防伪造回调占位/重复回调）
+	if r.Resolve(RenderCallback{HookID: "hook-1", RequestRoute: "/other", HTML: "<p>fake</p>"}) {
+		t.Fatal("expected false for route mismatch")
+	}
+	if r.Count() != 0 {
+		t.Fatalf("expected 0 pending after mismatch resolve, got %d", r.Count())
+	}
+	// 条目已删：正确路由的同名回调也无法再投递
+	if r.Resolve(RenderCallback{HookID: "hook-1", RequestRoute: "/news/1", HTML: "<p/>"}) {
+		t.Fatal("expected false after entry removed")
+	}
+}
+
 func TestPendingResolve_DeliversAndRemoves(t *testing.T) {
 	r := NewPendingRegistry(4)
-	waiter, _, err := r.Register("hook-1")
+	waiter, _, err := r.Register("hook-1", "/news/1")
 	if err != nil {
 		t.Fatalf("register failed: %v", err)
 	}
@@ -80,7 +108,7 @@ func TestPendingResolve_DeliversAndRemoves(t *testing.T) {
 
 func TestPendingCleanup_IdempotentAndSafe(t *testing.T) {
 	r := NewPendingRegistry(4)
-	_, cleanup1, err := r.Register("hook-1")
+	_, cleanup1, err := r.Register("hook-1", "/x")
 	if err != nil {
 		t.Fatalf("register failed: %v", err)
 	}
@@ -91,7 +119,7 @@ func TestPendingCleanup_IdempotentAndSafe(t *testing.T) {
 	}
 
 	// ABA 防护：同名 hook 重新注册后，旧 cleanup 不得误删新条目
-	waiter2, _, err := r.Register("hook-1")
+	waiter2, _, err := r.Register("hook-1", "/x")
 	_ = waiter2
 	if err != nil {
 		t.Fatalf("re-register failed: %v", err)
@@ -114,7 +142,7 @@ func TestPending_Concurrent(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			hookID := fmt.Sprintf("hook-%d", i)
-			waiter, cleanup, err := r.Register(hookID)
+			waiter, cleanup, err := r.Register(hookID, "/x")
 			if err != nil {
 				errs <- fmt.Errorf("register %s: %w", hookID, err)
 				return

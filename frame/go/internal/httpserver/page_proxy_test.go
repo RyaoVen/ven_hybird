@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ven_hybird/internal/config"
+	"ven_hybird/internal/pagecache"
 	"ven_hybird/internal/pagepattern"
 	"ven_hybird/internal/ssr"
 )
@@ -74,6 +75,24 @@ func TestRenderCallback_WrongToken(t *testing.T) {
 	}
 }
 
+// 去 fail-open：即使配置缺失（启动校验已拦截，这里直接构造模拟），
+// 内部回调也不得放行——无令牌一律 401。
+func TestRenderCallback_NoTokenConfiguredRejectsAll(t *testing.T) {
+	cfg := config.Config{
+		NodeSubmitTimeout: 100 * time.Millisecond,
+		RenderTimeout:     time.Second,
+		InternalToken:     "",
+	}
+	s := New(cfg, newChanClient(), ssr.NewPendingRegistry(8), ssr.CryptoHookIDGenerator{}, pagepattern.NewValidator(nil))
+	s.RegisterInternalRoutes()
+
+	resp := postCallback(t, s, "anything", `{"hookId":"h","requestRoute":"/x","html":"<p/>"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != 401 {
+		t.Fatalf("expected 401, got %d", resp.StatusCode)
+	}
+}
+
 func TestRenderCallback_BadBody(t *testing.T) {
 	s := newProxyTestServer(newChanClient(), time.Second)
 	s.RegisterInternalRoutes()
@@ -90,9 +109,9 @@ func TestRenderCallback_InvalidFields(t *testing.T) {
 	s.RegisterInternalRoutes()
 
 	cases := map[string]string{
-		"missing hookId":      `{"requestRoute":"/x","html":"<p/>"}`,
-		"route not slash":     `{"hookId":"h","requestRoute":"x","html":"<p/>"}`,
-		"html required":       `{"hookId":"h","requestRoute":"/x"}`,
+		"missing hookId":       `{"requestRoute":"/x","html":"<p/>"}`,
+		"route not slash":      `{"hookId":"h","requestRoute":"x","html":"<p/>"}`,
+		"html required":        `{"hookId":"h","requestRoute":"/x"}`,
 		"missing requestRoute": `{"hookId":"h","html":"<p/>"}`,
 	}
 	for name, body := range cases {
@@ -115,11 +134,33 @@ func TestRenderCallback_UnknownHook(t *testing.T) {
 	}
 }
 
+// 回调 route 归属校验：RequestRoute 与 Register 时记录的路由不一致 → 404 拒绝。
+func TestRenderCallback_RouteMismatch(t *testing.T) {
+	s := newProxyTestServer(newChanClient(), time.Second)
+	s.RegisterInternalRoutes()
+
+	if _, cleanup, err := s.pending.Register("hook-1", "/news/1"); err != nil {
+		t.Fatalf("register failed: %v", err)
+	} else {
+		defer cleanup()
+	}
+
+	resp := postCallback(t, s, "secret", `{"hookId":"hook-1","requestRoute":"/other","html":"<p>fake</p>"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != 404 {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+	// 拒绝后条目即删：路由正确的同名回调也不得再投递（防伪造回调占位）
+	if s.pending.Resolve(ssr.RenderCallback{HookID: "hook-1", RequestRoute: "/news/1", HTML: "<p/>"}) {
+		t.Fatal("route-mismatched resolve should have removed the entry")
+	}
+}
+
 func TestRenderCallback_OK(t *testing.T) {
 	s := newProxyTestServer(newChanClient(), time.Second)
 	s.RegisterInternalRoutes()
 
-	waiter, cleanup, err := s.pending.Register("hook-1")
+	waiter, cleanup, err := s.pending.Register("hook-1", "/x")
 	if err != nil {
 		t.Fatalf("register failed: %v", err)
 	}
@@ -288,5 +329,123 @@ func TestRender_SuccessThenCacheHit(t *testing.T) {
 	case extra := <-client.tasks:
 		t.Fatalf("cache hit should not submit task, got %+v", extra)
 	case <-time.After(150 * time.Millisecond):
+	}
+}
+
+// ---- stale-while-revalidate ----
+
+// waitCacheEntry 轮询等待缓存条目更新为目标 HTML（异步刷新完成后断言用）。
+func waitCacheEntry(t *testing.T, s *Server, key, wantHTML string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if entry, ok := s.pageCache.Get(key); ok && entry.HTML == wantHTML {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("cache entry not updated in time")
+}
+
+// 缓存过期后渲染失败：继续发过期缓存（stale）而不是 502，后台异步回源刷新，
+// 刷新成功后新内容替换缓存。
+func TestRender_StaleServedOnFailureThenAsyncRefresh(t *testing.T) {
+	client := newChanClient()
+	cfg := config.Config{
+		NodeSubmitTimeout:    100 * time.Millisecond,
+		RenderTimeout:        time.Second,
+		InternalToken:        "secret",
+		PageCacheTTL:         60 * time.Millisecond,
+		PageCacheStaleWindow: 200 * time.Millisecond,
+	}
+	s := New(cfg, client, ssr.NewPendingRegistry(8), ssr.CryptoHookIDGenerator{}, pagepattern.NewValidator(nil))
+	key, _ := pagecache.Key("/news/1", nil, map[string]any{})
+
+	// 第一次：成功渲染并回填缓存
+	respCh := requestFallback(t, s, "/news/1")
+	task := recvTask(t, client)
+	s.pending.Resolve(ssr.RenderCallback{
+		HookID:       task.HookID,
+		RequestRoute: task.RequestRoute,
+		MatchedRoute: "/news/:id",
+		HTML:         "<html>v1</html>",
+	})
+	status, body := recvResponse(t, respCh)
+	if status != 200 || !strings.Contains(body, "v1") {
+		t.Fatalf("expected 200 v1, got %d %q", status, body)
+	}
+
+	// 缓存过期后再请求：Node 渲染失败 → 发过期缓存（stale）而不是 502
+	time.Sleep(80 * time.Millisecond)
+	respCh2 := requestFallback(t, s, "/news/1")
+	task2 := recvTask(t, client)
+	s.pending.Resolve(ssr.RenderCallback{
+		HookID:       task2.HookID,
+		RequestRoute: task2.RequestRoute,
+		Error:        &ssr.RenderError{Code: "RENDER_FAILED", Message: "boom"},
+	})
+	status2, body2 := recvResponse(t, respCh2)
+	if status2 != 200 || !strings.Contains(body2, "v1") {
+		t.Fatalf("expected stale 200 v1, got %d %q", status2, body2)
+	}
+
+	// 后台异步刷新：提交了第二个任务；成功后缓存更新为新内容
+	refreshTask := recvTask(t, client)
+	s.pending.Resolve(ssr.RenderCallback{
+		HookID:       refreshTask.HookID,
+		RequestRoute: refreshTask.RequestRoute,
+		MatchedRoute: "/news/:id",
+		HTML:         "<html>v2</html>",
+	})
+	waitCacheEntry(t, s, key, "<html>v2</html>")
+
+	// 第三次请求：命中新缓存，不再回源
+	respCh3 := requestFallback(t, s, "/news/1")
+	status3, body3 := recvResponse(t, respCh3)
+	if status3 != 200 || !strings.Contains(body3, "v2") {
+		t.Fatalf("expected 200 v2, got %d %q", status3, body3)
+	}
+	select {
+	case extra := <-client.tasks:
+		t.Fatalf("fresh hit should not submit task, got %+v", extra)
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
+// PAGE_NOT_FOUND 是 Node 权威判定：即使有过期缓存也不发 stale（页面真没了）。
+func TestRender_NotFoundDoesNotServeStale(t *testing.T) {
+	client := newChanClient()
+	cfg := config.Config{
+		NodeSubmitTimeout:    100 * time.Millisecond,
+		RenderTimeout:        time.Second,
+		InternalToken:        "secret",
+		PageCacheTTL:         60 * time.Millisecond,
+		PageCacheStaleWindow: 200 * time.Millisecond,
+	}
+	s := New(cfg, client, ssr.NewPendingRegistry(8), ssr.CryptoHookIDGenerator{}, pagepattern.NewValidator(nil))
+
+	respCh := requestFallback(t, s, "/news/1")
+	task := recvTask(t, client)
+	s.pending.Resolve(ssr.RenderCallback{
+		HookID:       task.HookID,
+		RequestRoute: task.RequestRoute,
+		MatchedRoute: "/news/:id",
+		HTML:         "<html>v1</html>",
+	})
+	if status, _ := recvResponse(t, respCh); status != 200 {
+		t.Fatalf("expected 200, got %d", status)
+	}
+
+	time.Sleep(80 * time.Millisecond)
+	respCh2 := requestFallback(t, s, "/news/1")
+	task2 := recvTask(t, client)
+	s.pending.Resolve(ssr.RenderCallback{
+		HookID:       task2.HookID,
+		RequestRoute: task2.RequestRoute,
+		Error:        &ssr.RenderError{Code: "PAGE_NOT_FOUND", Message: "page gone"},
+	})
+	status2, body2 := recvResponse(t, respCh2)
+	if status2 != 404 || !strings.Contains(body2, "page gone") {
+		t.Fatalf("expected 404 (no stale for not-found), got %d %q", status2, body2)
 	}
 }

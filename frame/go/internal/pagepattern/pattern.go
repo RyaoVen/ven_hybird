@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -40,6 +43,55 @@ func (v *Validator) Validate(pattern string) error {
 		return fmt.Errorf("page pattern not found in node pages: %s", pattern)
 	}
 	return nil
+}
+
+// Patterns 返回去重排序后的 pattern 列表（持久化与诊断用）。
+func (v *Validator) Patterns() []string {
+	list := make([]string, 0, len(v.patterns))
+	for pattern := range v.patterns {
+		list = append(list, pattern)
+	}
+	sort.Strings(list)
+	return list
+}
+
+// Save 把校验器持久化到磁盘（原子写：临时文件 + rename）。
+// 供高可用启动回退使用：Node 不可达时用最近一次成功拉取的 pattern 启动。
+// 失败返回 error，调用方按 best-effort 处理（不影响主流程）。
+func Save(v *Validator, path string) error {
+	if path == "" {
+		return fmt.Errorf("page patterns file path is empty")
+	}
+	data, err := json.Marshal(patternList{Patterns: v.Patterns()})
+	if err != nil {
+		return fmt.Errorf("encode page patterns: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create patterns dir: %w", err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return fmt.Errorf("write page patterns: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("persist page patterns: %w", err)
+	}
+	return nil
+}
+
+// Load 从磁盘加载持久化的校验器（格式与 Save 一致）。
+// 文件缺失或内容损坏返回 error，调用方据此决定是否继续失败退出。
+func Load(path string) (*Validator, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read persisted page patterns: %w", err)
+	}
+	var list patternList
+	if err := json.Unmarshal(data, &list); err != nil {
+		return nil, fmt.Errorf("decode persisted page patterns: %w", err)
+	}
+	return NewValidator(list.Patterns), nil
 }
 
 // Fetch 从 Node 工作节点拉取全部页面路由模式并构建校验器。
