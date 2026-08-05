@@ -136,7 +136,7 @@ func TestSSE_AuthRequired(t *testing.T) {
 func TestSSE_PushStaticPage(t *testing.T) {
 	app, _, _, _ := setupTestApp(t)
 	shortDebounce(app)
-	mustStaticPage(t, app, "/news/:id", 10, false, func(c *PageCtx) error {
+	mustStaticPage(t, app, "/news/:id", 10, false, nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"id": c.Param("id")})
 	})
 	addr := startRealServer(t, app)
@@ -174,7 +174,7 @@ func TestSSE_PushDynamicPage(t *testing.T) {
 
 func TestSSE_PushQueryAware(t *testing.T) {
 	app, _, _, _ := setupTestApp(t)
-	mustStaticPage(t, app, "/news/:id", 10, false, func(c *PageCtx) error {
+	mustStaticPage(t, app, "/news/:id", 10, false, nil, func(c *PageCtx) error {
 		return c.JSON(fiber.Map{"id": c.Param("id"), "tab": c.Query("tab")})
 	})
 	addr := startRealServer(t, app)

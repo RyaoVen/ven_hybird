@@ -4,6 +4,7 @@ package hybrid
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"time"
 
 	"ven_hybird/internal/event"
@@ -12,15 +13,17 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-// StaticPage 注册一个静态页（ISR）：声明即注册 fiber 路由（GET+HEAD，公开无鉴权）。
+// StaticPage 注册一个静态页（ISR）：声明即注册 fiber 路由（GET+HEAD）。
 // dynamicUrl 为完整路由模式（支持多层动态，如 /blog/:id、/:user/blog/:id，纯静态页如 /about）。
 // maxPages 为该模式物化文件数上限（0 = 不限）；
 // smartLoad 开启时全局 DataChange 按访问热度预重渲染 Top-N，超出上限走 SSR；
 // 关闭且设置上限时按 LRU 懒删除（淘汰最久未访问文件）。
+// roles 为该页的鉴权角色要求（与 Page 一致：nil/空 = 公开；非空 = 需登录且角色匹配）——
+// ISR 物化直发路径由 httpserver 中间件校验，miss 回源路径由本 handler 校验，两路都生效。
 //
-// 请求流程：ISR 中间件命中物化文件直接返回（不经过本 handler）；
-// miss 时执行 handler 取数 → RenderPage（内部完成落盘与上限治理）。
-func (a *App) StaticPage(dynamicUrl string, maxPages int, smartLoad bool, h PageHandler) error {
+// 请求流程：StaticPage 鉴权中间件（命中带 roles 的模式先校验会话）→
+// ISR 中间件命中物化文件直接返回；miss 时执行 handler 取数 → RenderPage（内部完成落盘与上限治理）。
+func (a *App) StaticPage(dynamicUrl string, maxPages int, smartLoad bool, roles []string, h PageHandler) error {
 	if err := checkPagePatternAllowed(dynamicUrl); err != nil {
 		return err
 	}
@@ -31,9 +34,32 @@ func (a *App) StaticPage(dynamicUrl string, maxPages int, smartLoad bool, h Page
 	if err := a.server.RegisterStaticPage(decl); err != nil {
 		return err
 	}
+	levels, err := a.server.ResolveRoles(roles)
+	if err != nil {
+		return fmt.Errorf("hybrid: resolve roles for static page %q failed: %w", dynamicUrl, err)
+	}
+	a.server.RegisterStaticPageAuth(dynamicUrl, levels)
 	a.staticHandlers[dynamicUrl] = h
 
 	handler := func(ctx *fiber.Ctx) error {
+		// 鉴权：公开页直接放行；带 roles 的页在静态直发路径已由中间件校验，
+		// 此处兜住 miss 回源路径（未命中物化文件时走本 handler）。
+		// 直发中间件已拦截未授权，故这里仅需防御性再查一次（幂等）。
+		if userRole, status, reason := a.authCheck(ctx, levels); status != fiber.StatusOK {
+			log.Printf("auth: denied %s %s reason=%s role=%s static=%s", ctx.Method(), ctx.Path(), reason, userRole, dynamicUrl)
+			if isDataOnly(ctx) {
+				if status == fiber.StatusUnauthorized {
+					ctx.Set(loginPathHeader, a.loginRedirect)
+				}
+				return ctx.Status(status).JSON(fiber.Map{"error": reason})
+			}
+			if status == fiber.StatusUnauthorized {
+				return ctx.Redirect(a.loginRedirect+"?next="+url.QueryEscape(ctx.OriginalURL()), fiber.StatusFound)
+			}
+			ctx.Status(fiber.StatusForbidden)
+			return a.server.RenderPageAs(ctx, forbiddenPageRoute, nil)
+		}
+
 		c := newPageCtx(ctx, a.server)
 		if err := h(c); err != nil {
 			return err

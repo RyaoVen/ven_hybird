@@ -47,7 +47,7 @@ func TestApi_PageRejectsApiPrefix(t *testing.T) {
 	if err := app.Page("/api/foo", nil, func(c *PageCtx) error { return nil }); err == nil {
 		t.Fatal("expected error for Page with /api prefix")
 	}
-	if err := app.StaticPage("/api/foo", 1, false, func(c *PageCtx) error { return nil }); err == nil {
+	if err := app.StaticPage("/api/foo", 1, false, nil, func(c *PageCtx) error { return nil }); err == nil {
 		t.Fatal("expected error for StaticPage with /api prefix")
 	}
 }

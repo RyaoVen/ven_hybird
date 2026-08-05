@@ -58,8 +58,10 @@ func (a *App) Server() *httpserver.Server {
 }
 
 // SetLoginRedirect 配置 401（未登录）时的登录跳转目标，默认 /login。
+// 同步到 httpserver，StaticPage 鉴权中间件的 302 跳转同样生效。
 func (a *App) SetLoginRedirect(path string) {
 	a.loginRedirect = path
+	a.server.SetLoginRedirect(path)
 }
 
 // SetVisitRecorder 设置页面访问统计埋点回调（nil = 关闭埋点）。

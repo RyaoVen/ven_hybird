@@ -23,6 +23,10 @@ func (s *Server) RegisterInternalRoutes() {
 	// 静态资源服务：将 /assets 路径映射到本地 AssetsDir 目录
 	s.app.Static("/assets", s.config.AssetsDir)
 
+	// StaticPage 鉴权中间件：命中带鉴权要求的静态页模式时校验会话，
+	// 使 ISR 物化直发路径也受鉴权保护（必须先于 ISR 直发中间件注册）。
+	s.app.Use(s.staticAuthMiddleware())
+
 	// ISR 静态直发中间件：命中物化文件直接返回，miss 放行到业务页面与兜底
 	// 注册在内部端点之后、业务页面之前（业务页面由后续注册流程挂载）
 	s.app.Use(s.isrStore.Middleware())
