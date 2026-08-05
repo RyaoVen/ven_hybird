@@ -484,3 +484,54 @@ func TestRender_NotFoundDoesNotServeStale(t *testing.T) {
 		t.Fatalf("expected 404 (no stale for not-found), got %d %q", status2, body2)
 	}
 }
+
+// TestRender_PendingCapacityBackpressure pending 满时新页面请求 503（背压），不挂起等回调。
+func TestRender_PendingCapacityBackpressure(t *testing.T) {
+	client := newChanClient()
+	cfg := config.Config{
+		NodeSubmitTimeout: 100 * time.Millisecond,
+		RenderTimeout:     time.Second,
+		InternalToken:     "secret",
+	}
+	// 容量 1：第一个请求占满后，第二个请求应 503
+	s := New(cfg, client, ssr.NewPendingRegistry(1), ssr.CryptoHookIDGenerator{}, pagepattern.NewValidator(nil))
+	s.RegisterPageFallback()
+
+	// 第一个请求：占用唯一 pending 位（提交后不 Resolve，保持挂起）
+	req1 := httptest.NewRequest("GET", "/news/1", nil)
+	respCh1 := make(chan *http.Response, 1)
+	go func() {
+		resp, err := s.App().Test(req1)
+		if err != nil {
+			t.Errorf("request 1 failed: %v", err)
+			respCh1 <- nil
+			return
+		}
+		respCh1 <- resp
+	}()
+	// 等待任务提交（此时 pending 已占用）
+	task := recvTask(t, client)
+
+	// 第二个请求：pending 已满 → 503 立即返回
+	resp2, err := s.App().Test(httptest.NewRequest("GET", "/news/2", nil))
+	if err != nil {
+		t.Fatalf("request 2 failed: %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for pending capacity, got %d", resp2.StatusCode)
+	}
+
+	// 释放第一个请求（Resolve 回调），避免挂起的测试 goroutine 泄漏
+	s.pending.Resolve(ssr.RenderCallback{
+		HookID:       task.HookID,
+		RequestRoute: task.RequestRoute,
+		MatchedRoute: "/news/:id",
+		HTML:         "<html>news 1</html>",
+	})
+	resp1 := <-respCh1
+	if resp1 != nil {
+		resp1.Body.Close()
+	}
+}
+
