@@ -45,6 +45,8 @@ func main() {
 	// 步骤 4: 创建 HTTP 服务器并注册内部路由（渲染回调、健康检查、静态资源等）
 	server := httpserver.New(cfg, client, pending, ssr.CryptoHookIDGenerator{}, patterns)
 	server.RegisterInternalRoutes()
+	// 主动刷新 Node 页面模式：Node build 后路由表变化，运行期自动感知（无需重启）
+	server.StartPatternRefresher()
 
 	// 步骤 5: 创建 hybrid 应用并注册业务页面
 	app := hybrid.New(server)
