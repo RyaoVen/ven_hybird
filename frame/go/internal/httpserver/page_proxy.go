@@ -48,6 +48,8 @@ func (s *Server) renderPage(ctx *fiber.Ctx, route string, data any) error {
 				s.materializeQuiet(route, entry.HTML)
 			}
 			ctx.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
+			// SSR 页面内容每次渲染可变：no-cache 防止浏览器/中间层缓存部署前的旧页面（与 SSE 同策略）
+			ctx.Set(fiber.HeaderCacheControl, "no-cache")
 			return ctx.SendString(entry.HTML)
 		}
 	}
@@ -96,6 +98,8 @@ func (s *Server) renderPage(ctx *fiber.Ctx, route string, data any) error {
 		}
 	}
 	ctx.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
+	// SSR 页面内容每次渲染可变：no-cache 防止浏览器/中间层缓存部署前的旧页面（与 SSE 同策略）
+	ctx.Set(fiber.HeaderCacheControl, "no-cache")
 	return ctx.SendString(entry.HTML)
 }
 

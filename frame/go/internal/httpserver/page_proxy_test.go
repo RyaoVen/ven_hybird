@@ -332,6 +332,41 @@ func TestRender_SuccessThenCacheHit(t *testing.T) {
 	}
 }
 
+// TestRender_SSRResponseNoCache 校验 SSR 页面响应头含 Cache-Control: no-cache
+// （页面内容每次渲染可变，防止浏览器/中间层缓存部署前的旧页面；与 SSE 同策略）。
+func TestRender_SSRResponseNoCache(t *testing.T) {
+	client := newChanClient()
+	s := newProxyTestServer(client, time.Second)
+	s.RegisterPageFallback()
+
+	respCh := make(chan *http.Response, 1)
+	go func() {
+		resp, err := s.App().Test(httptest.NewRequest("GET", "/news/1", nil))
+		if err != nil {
+			t.Errorf("request failed: %v", err)
+			respCh <- nil
+			return
+		}
+		respCh <- resp
+	}()
+	task := recvTask(t, client)
+	s.pending.Resolve(ssr.RenderCallback{
+		HookID:       task.HookID,
+		RequestRoute: task.RequestRoute,
+		MatchedRoute: "/news/:id",
+		HTML:         "<html>news 1</html>",
+	})
+
+	resp := <-respCh
+	if resp == nil {
+		t.Fatal("request failed (see above)")
+	}
+	defer resp.Body.Close()
+	if cc := resp.Header.Get("Cache-Control"); cc != "no-cache" {
+		t.Fatalf("expected Cache-Control: no-cache, got %q", cc)
+	}
+}
+
 // ---- stale-while-revalidate ----
 
 // waitCacheEntry 轮询等待缓存条目更新为目标 HTML（异步刷新完成后断言用）。
