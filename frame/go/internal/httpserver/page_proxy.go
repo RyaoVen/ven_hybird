@@ -189,7 +189,11 @@ func (s *Server) renderWithQuery(route string, query map[string]string, data any
 	}
 
 	// 步骤 5: 等待渲染结果回调或超时
-	// 使用 select 同时监听回调通道和超时定时器
+	// 使用 select 同时监听回调通道和超时定时器。
+	// 用 time.NewTimer + defer Stop：超时分支命中后 timer 立即回收，
+	// 避免 time.After 的 timer 等超时时长才 GC（高并发下逐个泄漏）。
+	timer := time.NewTimer(s.config.RenderTimeout)
+	defer timer.Stop()
 	select {
 	case callback := <-waiter:
 		// Node 有响应即视为传输健康（含回调错误分支）：不计入熔断失败
@@ -210,7 +214,7 @@ func (s *Server) renderWithQuery(route string, query map[string]string, data any
 			RenderedAt:   time.Now(),
 			Duration:     callback.Duration,
 		}, nil
-	case <-time.After(s.config.RenderTimeout):
+	case <-timer.C:
 		// 渲染超时：计入熔断失败
 		s.breaker.RecordFailure()
 		return nil, &renderError{fiber.StatusGatewayTimeout, "render worker timed out", true}
