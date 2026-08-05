@@ -14,6 +14,8 @@ import (
 	"ven_hybird/internal/pagecache"
 	"ven_hybird/internal/pagepattern"
 	"ven_hybird/internal/ssr"
+
+	"github.com/gofiber/fiber/v2"
 )
 
 // chanClient 是 channel 收任务的假 SSR client：测试拿到任务后自行注入回调。
@@ -532,6 +534,82 @@ func TestRender_PendingCapacityBackpressure(t *testing.T) {
 	resp1 := <-respCh1
 	if resp1 != nil {
 		resp1.Body.Close()
+	}
+}
+
+// TestRender_ClientDisconnect 客户端断开：renderWithQuery 立即停止等待（不等满渲染超时），
+// pending 由 defer remove 清理，Node 迟到回调返回 unknown hook（结果丢弃）。
+func TestRender_ClientDisconnect(t *testing.T) {
+	client := newChanClient()
+	// 渲染超时 5s：断开应远早于超时返回
+	s := newProxyTestServer(client, 5*time.Second)
+
+	done := make(chan struct{})
+	start := time.Now()
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := s.renderWithQuery("/news/1", nil, map[string]any{}, done)
+		resultCh <- err
+	}()
+
+	// 等任务提交（pending 已注册），随后模拟客户端断开
+	task := recvTask(t, client)
+	close(done)
+
+	select {
+	case err := <-resultCh:
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("disconnect should return early, waited %s", elapsed)
+		}
+		var renderErr *renderError
+		if !errors.As(err, &renderErr) || renderErr.status != fiber.StatusRequestTimeout {
+			t.Fatalf("expected client-disconnect error, got %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("renderWithQuery did not return after client disconnect")
+	}
+
+	// pending 已清理：Node 完成的任务迟到回调 → Resolve 返回 false（unknown hook）
+	if s.pending.Resolve(ssr.RenderCallback{
+		HookID:       task.HookID,
+		RequestRoute: task.RequestRoute,
+		MatchedRoute: "/news/:id",
+		HTML:         "<html>late</html>",
+	}) {
+		t.Fatal("late callback should be rejected after client disconnect")
+	}
+}
+
+// TestRender_NilClientDone 后台渲染（无客户端）：clientDone 传 nil 时只等回调/超时，
+// 行为与断开监听无关（nil channel 分支永不触发）。
+func TestRender_NilClientDone(t *testing.T) {
+	client := newChanClient()
+	s := newProxyTestServer(client, time.Second)
+
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := s.renderWithQuery("/news/1", nil, map[string]any{}, nil)
+		resultCh <- err
+	}()
+	task := recvTask(t, client)
+	s.pending.Resolve(ssr.RenderCallback{
+		HookID:       task.HookID,
+		RequestRoute: task.RequestRoute,
+		MatchedRoute: "/news/:id",
+		HTML:         "<html>bg</html>",
+	})
+
+	select {
+	case err := <-resultCh:
+		if err != nil {
+			t.Fatalf("background render should succeed, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("background render did not complete")
+	}
+	// 与断开无关：回调正常被消费，不产生迟到拒绝
+	if s.pending.Resolve(ssr.RenderCallback{HookID: task.HookID, RequestRoute: task.RequestRoute, HTML: "<p/>"}) {
+		t.Fatal("resolved entry should have been removed already")
 	}
 }
 
