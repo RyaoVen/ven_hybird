@@ -207,3 +207,96 @@ func TestStoreStaleWindowZeroDisabled(t *testing.T) {
 		t.Fatal("stale disabled: entry should be gone after ttl")
 	}
 }
+
+// TestFlightFollowerTimeout leader 不 complete 时 follower 超时返回，不永久挂起。
+// 观测窗口取 flightTimeout 的合理比例（1s）：follower 应在此窗口内返回超时错误而非无限等待。
+func TestFlightFollowerTimeout(t *testing.T) {
+	g := newFlightGroup()
+
+	// leader 成为 leader 后永不 complete（模拟 panic/代码路径遗漏）
+	_, _, shared := g.acquire("k")
+	if shared {
+		t.Fatal("expected first acquire to be leader")
+	}
+
+	// 临时把 flightTimeout 改小（生产默认 30s），避免测试等满超时时长
+	orig := flightTimeout
+	flightTimeout = 100 * time.Millisecond
+	defer func() { flightTimeout = orig }()
+
+	// 用独立 goroutine 等待 acquire，主 goroutine 在观测窗口内判断是否返回
+	type res struct {
+		err error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		_, err, shared := g.acquire("k")
+		if !shared {
+			ch <- res{err: errors.New("expected follower")}
+			return
+		}
+		ch <- res{err: err}
+	}()
+
+	select {
+	case r := <-ch:
+		if !errors.Is(r.err, ErrFlightTimeout) {
+			t.Fatalf("expected ErrFlightTimeout, got %v", r.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("follower hung forever after leader never completed")
+	}
+}
+
+// TestFlightLeaderPanicDoesNotHangFollower leader fn panic 时 Do 仍 complete（defer 兜底），
+// follower 拿到结果而非永久挂起；panic 向上传播由调用方处理。
+func TestFlightLeaderPanicDoesNotHangFollower(t *testing.T) {
+	store := NewStore(NewMemoryBackend(10), time.Hour, time.Hour)
+
+	type result struct {
+		entry  *Entry
+		shared bool
+		err    error
+	}
+	leaderDone := make(chan struct{})
+	panicCh := make(chan any, 1)
+	var wg sync.WaitGroup
+	var followerRes result
+
+	// leader：fn panic
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() { panicCh <- recover() }()
+		_, _, _ = store.Do("k", func() (*Entry, error) {
+			close(leaderDone)
+			panic("boom")
+		})
+	}()
+
+	// follower：等 leader 开始后并发 Do（等待 leader 完成，不应被 panic 挂起）
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-leaderDone
+		followerRes.entry, followerRes.shared, followerRes.err = store.Do("k", func() (*Entry, error) {
+			return &Entry{HTML: "fallback"}, nil
+		})
+	}()
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("follower hung after leader panic (defer complete not executed)")
+	}
+
+	if p := <-panicCh; p == nil {
+		t.Fatal("expected leader panic to propagate")
+	}
+	// follower 超时后降级为自身回源拿到 fallback（或共享到错误结果，两者都不挂起）
+	if followerRes.entry == nil && followerRes.err == nil {
+		t.Fatal("follower got neither result nor error")
+	}
+}
