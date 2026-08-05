@@ -26,6 +26,7 @@ import (
 const (
 	defaultQuietWindow = 5 * time.Second  // 静默窗口：无新变更即 flush
 	defaultMaxWait     = 30 * time.Second // 最大等待：持续变更强制 flush 防饥饿
+	defaultMaxPending  = 1024             // 待处理批次容量上限（防不同 pattern 事件无界累积）
 )
 
 // ChangeEvent 是一次数据变更声明（StaticPage 模板 + 左到右填充的动态段参数）。
@@ -72,6 +73,9 @@ type Bus struct {
 	QuietWindow time.Duration
 	// MaxWait 是本批首个事件入队后的最大等待（强制 flush 防饥饿）。可在启动期调整。
 	MaxWait time.Duration
+	// MaxPending 是待处理批次容量上限：去重后仍超出时丢弃新事件并记日志
+	// （事件本质是敦促更新，允许丢；防不同 pattern 事件无界累积）。<= 0 = 不设上限。
+	MaxPending int
 
 	invalidate  InvalidateFunc
 	render      RenderFunc
@@ -99,6 +103,7 @@ func New(invalidate InvalidateFunc, render RenderFunc, materialize MaterializeFu
 	b := &Bus{
 		QuietWindow: defaultQuietWindow,
 		MaxWait:     defaultMaxWait,
+		MaxPending:  defaultMaxPending,
 		invalidate:  invalidate,
 		render:      render,
 		materialize: materialize,
@@ -181,6 +186,13 @@ func (b *Bus) enqueue(ev ChangeEvent) {
 			log.Printf("event: dedup change %s params=%v (covered by params=%v)", e.Pattern, e.Params, ev.Params)
 			delete(b.pending, k)
 		}
+	}
+	// 容量上限：去重后仍无位可放（pending 满）时丢弃新事件并记日志。
+	// 事件本质是敦促更新，允许丢——防高压多变 pattern 下 pending map 无界增长。
+	if b.MaxPending > 0 && len(b.pending) >= b.MaxPending {
+		b.mu.Unlock()
+		log.Printf("event: pending full (%d), dropped change %s params=%v", b.MaxPending, ev.Pattern, ev.Params)
+		return
 	}
 	b.pending[key] = &ev
 	b.mu.Unlock()

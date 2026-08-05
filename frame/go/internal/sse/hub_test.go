@@ -185,3 +185,45 @@ func TestHub_Close(t *testing.T) {
 		t.Fatal("expected late conn pre-closed")
 	}
 }
+
+// TestHub_MaxConnsRejects 连接数超限：新订阅被拒绝（预关闭连接，写端立即退出），
+// 已有连接不受影响、照常推送；conns map 有界不增长。
+func TestHub_MaxConnsRejects(t *testing.T) {
+	var count atomic.Int64
+	hub := New(countDataFn(&count))
+	defer hub.Close()
+	hub.MaxConns = 2
+
+	a := hub.Subscribe("/news/:id", "/news/1", map[string]string{"id": "1"}, map[string]string{})
+	_ = hub.Subscribe("/news/:id", "/news/2", map[string]string{"id": "2"}, map[string]string{}) // 占满上限
+	rejected := hub.Subscribe("/news/:id", "/news/3", map[string]string{"id": "3"}, map[string]string{})
+
+	// 被拒连接预关闭（写端立即退出，等同 503 拒绝语义）
+	select {
+	case <-rejected.Closed():
+	case <-time.After(time.Second):
+		t.Fatal("expected rejected conn pre-closed")
+	}
+	// 连接表保持上限值，不因拒绝而增长
+	if got := hub.ConnCount(); got != 2 {
+		t.Fatalf("expected conn table capped at 2, got %d", got)
+	}
+	// 已有连接仍正常工作：推送照常到达
+	hub.NotifyPath("/news/1")
+	recvFrame(t, a, time.Second)
+	expectNoFrame(t, rejected, 100*time.Millisecond)
+}
+
+// TestHub_MaxConnsNoLimitByDefault 默认（MaxConns 未设）不设上限：连接数治理是显式配置。
+func TestHub_MaxConnsNoLimitByDefault(t *testing.T) {
+	hub := New(func(pattern string, params, query map[string]string) (any, bool) { return nil, false })
+	defer hub.Close()
+	hub.MaxConns = 0 // 零值 = 不设上限（向后兼容字面量构造的测试）
+
+	for i := 0; i < 10; i++ {
+		hub.Subscribe("/news/:id", "/news/1", map[string]string{"id": "1"}, map[string]string{})
+	}
+	if got := hub.ConnCount(); got != 10 {
+		t.Fatalf("MaxConns=0 应不设上限，got %d", got)
+	}
+}
